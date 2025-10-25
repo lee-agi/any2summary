@@ -1,0 +1,2 @@
+[console_scripts]
+podcast-transformer = podcast_transformer.cli:main

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "podcast-transformer"
+version = "0.1.0"
+description = "CLI 工具：下载并增强 YouTube 播客字幕，支持 Azure OpenAI 转写与总结"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "podcast-transformer maintainers" }]
+license = { text = "Proprietary" }
+dependencies = [
+    "openai>=1.30.0",
+    "youtube-transcript-api>=0.6.2",
+    "yt-dlp>=2024.3.10",
+    "httpx[socks]>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+podcast-transformer = "podcast_transformer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["podcast_transformer*"]
