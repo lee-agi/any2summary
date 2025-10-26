@@ -10,7 +10,9 @@
 - 内置 Android 客户端回退逻辑，即使未配置 cookie 也能规避常见的 403 Forbidden 下载失败。
 - 自动检测超长（超过 Azure 1,500 秒限制）或超大音频并切分成多个片段，逐段提交 Azure，并通过流式返回实时刷新进度条。
 - 通过 `gpt-4o-transcribe-diarize` 返回的说话人分段信息，将不同说话人合并入字幕。
+- 兼容 Azure OpenAI `diarized_json` 响应中 `response.output` 的嵌套结构，即使 YouTube 无字幕也能利用 Azure 转写结果产出文本。
 - 当 Azure 暂未返回说话人分段时，会退回空说话人列表并继续使用已有字幕，避免 CLI 直接失败。
+- 若视频已提供带时间轴的字幕，默认直接复用字幕并跳过 Azure 说话人分离，避免冗余的音频下载与 ASR 调用；如需强制执行可添加 `--force-azure-diarization`。
 - 可选调用 Azure GPT-5，根据定制 system prompt 翻译与总结 ASR 片段。
 - 支持通过 `--summary-prompt-file` 指定外部 Prompt 配置文件，无需改动代码即可调整摘要策略。
 - 摘要结果以标准 Markdown 格式输出，包含封面、目录与时间轴表格，并自动写入缓存目录的 `summary.md` 文件。
@@ -97,6 +99,8 @@ cp .env.example .env
 ```
 
 如果只需要字幕（无需说话人分离），省略 `--azure-diarization` 选项即可。若目标视频无所需语言字幕，可通过 `--fallback-language` 多次指定备用语言。当所有字幕均不可用时，启用 `--azure-diarization` 会自动调用 Azure OpenAI 完整转写与说话人分离。
+
+默认情况下，即使添加了 `--azure-diarization`，只要成功获取带时间线的字幕段，CLI 就会直接输出字幕并跳过 Azure 调用；若需要强制执行 Azure 说话人分离，可附加 `--force-azure-diarization`，或提供 `--known-speaker`/`--known-speaker-name`/`--max-speakers` 参数以触发完整流程。
 
 若希望辅助识别特定说话人，可附加 `--known-speaker 名称=音频路径` 选项（可多次指定），工具会自动将参照音频转为数据 URL 并传递给 Azure OpenAI。若仅有姓名提示，可使用 `--known-speaker-name 姓名` 多次指定（例如 `--known-speaker-name Alice --known-speaker-name Bob`），脚本会将所有姓名通过 `known_speaker_names` 参数直接发送给 Azure 接口，以提升说话人标签的准确率。
 

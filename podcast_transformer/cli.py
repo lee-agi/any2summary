@@ -147,6 +147,11 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         help="Call Azure OpenAI diarization to annotate speakers.",
     )
     parser.add_argument(
+        "--force-azure-diarization",
+        action="store_true",
+        help="即使字幕可用也强制调用 Azure 说话人分离。",
+    )
+    parser.add_argument(
         "--azure-summary",
         action="store_true",
         help="调用 Azure GPT-5 对 ASR 结果进行翻译与总结。",
@@ -200,6 +205,11 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
 
     _load_dotenv_if_present(os.getenv("PODCAST_TRANSFORMER_DOTENV"))
 
+    if args.force_azure_diarization and not args.azure_diarization:
+        raise RuntimeError(
+            "--force-azure-diarization 需要与 --azure-diarization 一起使用。"
+        )
+
     if args.summary_prompt_file and not args.azure_summary:
         raise RuntimeError(
             "--summary-prompt-file 仅能与 --azure-summary 搭配使用。"
@@ -251,7 +261,21 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     diarization_segments: Optional[List[MutableMapping[str, float | str]]] = None
     azure_payload: Optional[MutableMapping[str, Any]] = None
 
-    if args.azure_diarization:
+    should_use_azure = bool(args.azure_diarization)
+    if should_use_azure and not args.force_azure_diarization:
+        has_known_speakers = bool(known_speaker_pairs)
+        has_known_names = bool(known_speaker_names)
+        has_speaker_constraints = (
+            args.max_speakers is not None or has_known_speakers or has_known_names
+        )
+        if (
+            not has_speaker_constraints
+            and transcript_segments
+            and _segments_have_timestamps(transcript_segments)
+        ):
+            should_use_azure = False
+
+    if should_use_azure:
         azure_payload = perform_azure_diarization(
             video_url=args.url,
             language=args.language,
@@ -455,6 +479,27 @@ def fetch_transcript_with_metadata(
         )
 
     return normalized_segments
+
+
+def _segments_have_timestamps(
+    segments: Sequence[MutableMapping[str, float | str]]
+) -> bool:
+    """Return True when transcript segments contain usable timeline data."""
+
+    if not segments:
+        return False
+
+    for segment in segments:
+        start = segment.get("start")
+        end = segment.get("end")
+        try:
+            float(start)  # type: ignore[arg-type]
+            float(end)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        if float(end) < float(start):
+            return False
+    return True
 
 
 def perform_azure_diarization(
@@ -862,40 +907,59 @@ def _coerce_response_to_dict(response: object) -> MutableMapping[str, Any]:
     return {}
 
 
+def _iter_nested_mappings(
+    payload: Mapping[str, Any]
+) -> Iterator[MutableMapping[str, Any]]:
+    """Yield nested mappings discovered within the payload."""
+
+    if not isinstance(payload, MutableMapping):
+        return
+
+    stack: List[MutableMapping[str, Any]] = [payload]
+    seen_ids: set[int] = set()
+
+    while stack:
+        current = stack.pop()
+        identifier = id(current)
+        if identifier in seen_ids:
+            continue
+        seen_ids.add(identifier)
+        yield current
+        for value in current.values():
+            if isinstance(value, MutableMapping):
+                stack.append(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, MutableMapping):
+                        stack.append(item)
+
+
+def _collect_segment_candidates(
+    payload: Mapping[str, Any], keys: Sequence[str]
+) -> List[List[MutableMapping[str, Any]]]:
+    """Collect candidate segment lists from nested payload structures."""
+
+    candidates: List[List[MutableMapping[str, Any]]] = []
+
+    for mapping in _iter_nested_mappings(payload):
+        for key in keys:
+            value = mapping.get(key)
+            if isinstance(value, list):
+                segment_list = [
+                    item for item in value if isinstance(item, MutableMapping)
+                ]
+                if segment_list:
+                    candidates.append(segment_list)
+
+    return candidates
+
+
 def _extract_diarization_segments(
     payload: MutableMapping[str, Any]
 ) -> List[MutableMapping[str, float | str]]:
     """Extract diarization segments from verbose JSON payload."""
 
-    candidates: List[List[MutableMapping[str, Any]]] = []
-
-    for key in ("segments", "words", "items"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            segment_list = [item for item in value if isinstance(item, MutableMapping)]
-            if segment_list:
-                candidates.append(segment_list)
-
-    diarization = payload.get("diarization")
-    if isinstance(diarization, MutableMapping):
-        nested = diarization.get("segments")
-        if isinstance(nested, list):
-            segment_list = [item for item in nested if isinstance(item, MutableMapping)]
-            if segment_list:
-                candidates.append(segment_list)
-
-    data_entries = payload.get("data")
-    if isinstance(data_entries, list):
-        for entry in data_entries:
-            if not isinstance(entry, MutableMapping):
-                continue
-            entry_segments = entry.get("segments")
-            if isinstance(entry_segments, list):
-                segment_list = [
-                    item for item in entry_segments if isinstance(item, MutableMapping)
-                ]
-                if segment_list:
-                    candidates.append(segment_list)
+    candidates = _collect_segment_candidates(payload, ("segments", "words", "items"))
 
     normalized: List[MutableMapping[str, float | str]] = []
     seen = set()
@@ -926,37 +990,7 @@ def _extract_transcript_segments(
 ) -> List[MutableMapping[str, float | str]]:
     """Extract transcript segments with text from payload."""
 
-    candidates: List[List[MutableMapping[str, Any]]] = []
-
-    for key in ("segments", "utterances", "results"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            segment_list = [item for item in value if isinstance(item, MutableMapping)]
-            if segment_list:
-                candidates.append(segment_list)
-
-    diarization = payload.get("diarization")
-    if isinstance(diarization, MutableMapping):
-        for key in ("segments", "utterances"):
-            nested = diarization.get(key)
-            if isinstance(nested, list):
-                segment_list = [item for item in nested if isinstance(item, MutableMapping)]
-                if segment_list:
-                    candidates.append(segment_list)
-
-    data_entries = payload.get("data")
-    if isinstance(data_entries, list):
-        for entry in data_entries:
-            if not isinstance(entry, MutableMapping):
-                continue
-            for key in ("segments", "utterances"):
-                nested = entry.get(key)
-                if isinstance(nested, list):
-                    segment_list = [
-                        item for item in nested if isinstance(item, MutableMapping)
-                    ]
-                    if segment_list:
-                        candidates.append(segment_list)
+    candidates = _collect_segment_candidates(payload, ("segments", "utterances", "results"))
 
     transcript_segments: List[MutableMapping[str, float | str]] = []
     seen = set()

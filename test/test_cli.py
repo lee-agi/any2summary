@@ -60,6 +60,7 @@ def test_cli_outputs_transcript_with_speaker_annotations(monkeypatch, capsys):
         "--language",
         "en",
         "--azure-diarization",
+        "--force-azure-diarization",
     ])
 
     assert exit_code == 0
@@ -117,6 +118,82 @@ def test_cli_fallbacks_to_azure_transcription(monkeypatch, capsys):
 
     assert payload[0]["text"] == "Hello world."
     assert payload[1]["speaker"] == "Speaker B"
+
+
+def test_cli_skips_azure_when_captions_available(monkeypatch, capsys):
+    """有字幕时应短路 Azure 调用以避免下载音频。"""
+
+    segments = [
+        {"start": 0.0, "end": 2.0, "text": "Hello world."},
+        {"start": 2.0, "end": 4.0, "text": "Second."},
+    ]
+
+    monkeypatch.setattr(
+        cli,
+        "fetch_transcript_with_metadata",
+        lambda *args, **kwargs: [dict(segment) for segment in segments],
+    )
+
+    def fake_perform(*_args, **_kwargs):  # pragma: no cover - should not run
+        raise AssertionError("Azure diarization should be skipped when captions exist")
+
+    monkeypatch.setattr(cli, "perform_azure_diarization", fake_perform)
+
+    exit_code = cli.run(
+        [
+            "--url",
+            "https://youtu.be/example",
+            "--language",
+            "en",
+            "--azure-diarization",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["text"] == "Hello world."
+    assert "speaker" not in payload[0]
+
+
+def test_cli_force_azure_diarization_invokes_azure(monkeypatch, capsys):
+    """强制模式下即使有字幕也应调用 Azure。"""
+
+    segments = [
+        {"start": 0.0, "end": 3.0, "text": "Hello."},
+    ]
+
+    monkeypatch.setattr(
+        cli,
+        "fetch_transcript_with_metadata",
+        lambda *args, **kwargs: [dict(segment) for segment in segments],
+    )
+
+    azure_called = {"value": False}
+
+    def fake_perform(*_args, **_kwargs):
+        azure_called["value"] = True
+        return {
+            "speakers": [{"start": 0.0, "end": 3.0, "speaker": "Speaker A"}],
+            "transcript": None,
+        }
+
+    monkeypatch.setattr(cli, "perform_azure_diarization", fake_perform)
+
+    exit_code = cli.run(
+        [
+            "--url",
+            "https://youtu.be/example",
+            "--language",
+            "en",
+            "--azure-diarization",
+            "--force-azure-diarization",
+        ]
+    )
+
+    assert exit_code == 0
+    assert azure_called["value"] is True
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["speaker"] == "Speaker A"
 
 
 def test_prepare_audio_uses_cache(monkeypatch, tmp_path):
