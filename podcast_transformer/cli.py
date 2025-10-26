@@ -28,7 +28,6 @@ from typing import (
     Callable,
     Dict,
     Iterable,
-    Iterator,
     List,
     Mapping,
     MutableMapping,
@@ -59,10 +58,6 @@ WAV_FRAME_CHUNK_SIZE = 32_768
 ESTIMATED_TOKENS_PER_SECOND = 4.0
 PROGRESS_BAR_WIDTH = 30
 READING_WORDS_PER_MINUTE = 300
-DEFAULT_OUTBOX_DIR = (
-    "/Users/clzhang/Library/Mobile Documents/"
-    "iCloud~md~obsidian/Documents/Obsidian Vault/010 outbox"
-)
 
 
 _TIME_START_KEYS = (
@@ -250,6 +245,11 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         help="是否以流式模式调用 Azure 转写（默认启用，可用 --no-azure-streaming 关闭）",
     )
     parser.add_argument(
+        "--force-azure-diarization",
+        action="store_true",
+        help="即使字幕可用也强制调用 Azure 说话人分离。",
+    )
+    parser.add_argument(
         "--azure-summary",
         action="store_true",
         help="调用 Azure GPT-5 对 ASR 结果进行翻译与总结。",
@@ -305,6 +305,11 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
 
     _load_dotenv_if_present(os.getenv("PODCAST_TRANSFORMER_DOTENV"))
 
+    if args.force_azure_diarization and not args.azure_diarization:
+        raise RuntimeError(
+            "--force-azure-diarization 需要与 --azure-diarization 一起使用。"
+        )
+
     if args.summary_prompt_file and not args.azure_summary:
         raise RuntimeError(
             "--summary-prompt-file 仅能与 --azure-summary 搭配使用。"
@@ -356,7 +361,21 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     diarization_segments: Optional[List[MutableMapping[str, float | str]]] = None
     azure_payload: Optional[MutableMapping[str, Any]] = None
 
-    if args.azure_diarization:
+    should_use_azure = bool(args.azure_diarization)
+    if should_use_azure and not args.force_azure_diarization:
+        has_known_speakers = bool(known_speaker_pairs)
+        has_known_names = bool(known_speaker_names)
+        has_speaker_constraints = (
+            args.max_speakers is not None or has_known_speakers or has_known_names
+        )
+        if (
+            not has_speaker_constraints
+            and transcript_segments
+            and _segments_have_timestamps(transcript_segments)
+        ):
+            should_use_azure = False
+
+    if should_use_azure:
         azure_payload = perform_azure_diarization(
             video_url=args.url,
             language=args.language,
@@ -561,6 +580,27 @@ def fetch_transcript_with_metadata(
         )
 
     return normalized_segments
+
+
+def _segments_have_timestamps(
+    segments: Sequence[MutableMapping[str, float | str]]
+) -> bool:
+    """Return True when transcript segments contain usable timeline data."""
+
+    if not segments:
+        return False
+
+    for segment in segments:
+        start = segment.get("start")
+        end = segment.get("end")
+        try:
+            float(start)  # type: ignore[arg-type]
+            float(end)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+        if float(end) < float(start):
+            return False
+    return True
 
 
 def perform_azure_diarization(
@@ -1822,13 +1862,7 @@ def _write_summary_documents(
             f"写入摘要/时间轴 Markdown 文件失败：{summary_path}, {timeline_path}"
         ) from exc
 
-    outbox_path = _copy_summary_to_outbox(summary_path)
-
-    return {
-        "summary": summary_path,
-        "timeline": timeline_path,
-        "outbox_summary": outbox_path,
-    }
+    return {"summary": summary_path, "timeline": timeline_path}
 
 
 def _fetch_video_metadata(video_url: str) -> Mapping[str, Any]:
@@ -1880,22 +1914,6 @@ def _count_words(text: str) -> int:
         total = len(compact)
 
     return max(total, 0)
-
-
-def _copy_summary_to_outbox(summary_path: str) -> Optional[str]:
-    outbox_dir = os.getenv("PODCAST_TRANSFORMER_OUTBOX_DIR", DEFAULT_OUTBOX_DIR)
-    if not outbox_dir:
-        return None
-
-    try:
-        resolved_dir = os.path.expanduser(outbox_dir)
-        os.makedirs(resolved_dir, exist_ok=True)
-        base_name = os.path.basename(summary_path)
-        target_path = os.path.join(resolved_dir, base_name)
-        shutil.copyfile(summary_path, target_path)
-        return target_path
-    except OSError:
-        return None
 
 
 def _format_timestamp(value: Any) -> str:

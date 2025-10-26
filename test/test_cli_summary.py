@@ -99,7 +99,7 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     assert messages[0]["content"] == cli.SUMMARY_PROMPT
     assert messages[1]["role"] == "user"
     assert "Hello world" in messages[1]["content"]
-    assert "00:00:00" in messages[1]["content"]
+    assert "00:00:00.000" in messages[1]["content"]
 
 
 def test_run_with_azure_summary_outputs_summary(
