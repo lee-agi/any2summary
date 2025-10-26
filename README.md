@@ -12,6 +12,7 @@
 - 通过 `gpt-4o-transcribe-diarize` 返回的说话人分段信息，将不同说话人合并入字幕。
 - 当 Azure 暂未返回说话人分段时，会退回空说话人列表并继续使用已有字幕，避免 CLI 直接失败。
 - 可选调用 Azure GPT-5，根据定制 system prompt 翻译与总结 ASR 片段。
+- 支持通过 `--summary-prompt-file` 指定外部 Prompt 配置文件，无需改动代码即可调整摘要策略。
 - 摘要结果以标准 Markdown 格式输出，包含封面、目录与时间轴表格，并自动写入缓存目录的 `summary.md` 文件。
 - 自动加载工作目录或 `PODCAST_TRANSFORMER_DOTENV` 指向的 `.env` 文件，简化凭据管理。
 - 提供 `--clean-cache` 与 `--check-cache` 选项，方便排查与清理缓存。
@@ -87,6 +88,7 @@ cp .env.example .env
   --clean-cache \
   --azure-diarization \
   --azure-summary \
+  --summary-prompt-file /absolute/path/to/prompt.txt \
   --known-speaker Alice=/absolute/path/to/alice.wav \
   --known-speaker Bob=/absolute/path/to/bob.wav \
   --known-speaker-name Charlie \
@@ -126,7 +128,8 @@ cp .env.example .env
 ./setup_and_run.sh \
   --url "https://www.youtube.com/watch?v=<video-id>" \
   --language en \
-  --azure-summary
+  --azure-summary \
+  --summary-prompt-file ./prompts/summary_prompt.txt
 ```
 
 输出 JSON 将新增 `summary` 字段，内容遵循以下约定：
@@ -136,7 +139,7 @@ cp .env.example .env
 - 多人对话按说话人分段，保持第一人称述说；专业名词可带原文注释。
 - 同时会在对应视频缓存目录（例如 `~/.cache/podcast_transformer/youtube/<video_id>/summary.md`）写入一份结构化 Markdown 文件，含封面标题、目录与时间轴表格；CLI 输出会额外返回 `summary_path` 方便调用方读取该文件。
 
-若需调整文案风格，可通过 `AZURE_OPENAI_SUMMARY_DEPLOYMENT` 更换部署，或在调用 `generate_translation_summary` 时传入自定义 prompt。
+若需调整文案风格，可通过 `AZURE_OPENAI_SUMMARY_DEPLOYMENT` 更换部署，或在调用 CLI 时提供 `--summary-prompt-file` 指向自定义 prompt 文件；保持为空时则回退到内置的 `SUMMARY_PROMPT`。
 
 ## 示例脚本
 

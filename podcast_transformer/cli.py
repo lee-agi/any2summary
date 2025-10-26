@@ -152,6 +152,11 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         help="调用 Azure GPT-5 对 ASR 结果进行翻译与总结。",
     )
     parser.add_argument(
+        "--summary-prompt-file",
+        dest="summary_prompt_file",
+        help="自定义 Azure 摘要系统 Prompt 的配置文件路径。",
+    )
+    parser.add_argument(
         "--max-speakers",
         type=int,
         default=None,
@@ -194,6 +199,11 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     _load_dotenv_if_present(os.getenv("PODCAST_TRANSFORMER_DOTENV"))
+
+    if args.summary_prompt_file and not args.azure_summary:
+        raise RuntimeError(
+            "--summary-prompt-file 仅能与 --azure-summary 搭配使用。"
+        )
 
     if args.clean_cache:
         cache_directory = _resolve_video_cache_dir(args.url)
@@ -269,7 +279,14 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     summary_bundle: Optional[MutableMapping[str, Any]] = None
     summary_paths: Optional[Mapping[str, str]] = None
     if args.azure_summary:
-        summary_bundle = generate_translation_summary(merged_segments, args.url)
+        custom_prompt: Optional[str] = None
+        if args.summary_prompt_file:
+            custom_prompt = _load_summary_prompt_file(args.summary_prompt_file)
+        summary_bundle = generate_translation_summary(
+            merged_segments,
+            args.url,
+            prompt=custom_prompt,
+        )
         summary_paths = _write_summary_documents(
             args.url,
             summary_bundle.get("summary_markdown", ""),
@@ -1131,6 +1148,25 @@ def _extract_openai_error_message(exc: Exception) -> str:
     return text.strip() or "Unknown Azure OpenAI error"
 
 
+def _load_summary_prompt_file(path: str) -> str:
+    """Load custom summary prompt content from a file."""
+
+    absolute_path = os.path.abspath(path)
+    if not os.path.isfile(absolute_path):
+        raise RuntimeError(f"摘要 Prompt 配置文件不存在：{path}")
+
+    try:
+        with open(absolute_path, "r", encoding="utf-8") as handle:
+            content = handle.read()
+    except OSError as exc:
+        raise RuntimeError(f"读取摘要 Prompt 配置文件失败：{path}") from exc
+
+    if not content.strip():
+        raise RuntimeError(f"摘要 Prompt 配置文件内容为空：{path}")
+
+    return content
+
+
 def generate_translation_summary(
     segments: Sequence[MutableMapping[str, Any]],
     video_url: str,
@@ -1471,7 +1507,7 @@ def _format_timestamp(value: Any) -> str:
     minutes = (total_milliseconds // 60_000) % 60
     secs = (total_milliseconds // 1000) % 60
     milliseconds = total_milliseconds % 1000
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{milliseconds:03d}"
 
 
 def _format_publish_date(raw: str) -> str:
