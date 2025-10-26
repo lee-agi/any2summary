@@ -16,6 +16,20 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from podcast_transformer import cli
 
 
+def test_consume_transcription_response_collects_stream_data() -> None:
+    """流式响应应累积所有 chunk 便于后续解析。"""
+
+    chunks = [
+        {"type": "transcript.segment", "segments": [{"start": 0, "end": 1}]},
+        {"type": "transcript.text.done", "text": "Final"},
+    ]
+
+    result = cli._consume_transcription_response(iter(chunks))
+
+    assert "data" in result
+    assert result["data"] == chunks
+
+
 def _write_silent_wav(path: Path, duration_seconds: float, sample_rate: int = 8000) -> None:
     """生成指定时长的静音 WAV 文件。"""
 
@@ -81,38 +95,63 @@ def test_cli_azure_diarization_handles_nested_payload(
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "dummy")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.com")
 
-    nested_payload = {
-        "response": {
-            "output": [
-                {
-                    "type": "diarization",
-                    "diarization": {
-                        "segments": [
-                            {"start": 0.0, "end": 1.0, "speaker": "Speaker 1"},
-                            {"start": 1.0, "end": 2.0, "speaker": "Speaker 2"},
-                        ]
+    stream_events = [
+        {
+            "diarization": {
+                "segments": [
+                    {
+                        "timestamps": {
+                            "start": {"seconds": 0},
+                            "end": {"seconds": 1},
+                        },
+                        "speaker": {"label": "Speaker 1"},
                     },
-                    "segments": [
-                        {
-                            "start": 0.0,
-                            "end": 1.0,
-                            "text": "Hello",
-                            "speaker": "Speaker 1",
+                    {
+                        "timestamps": {
+                            "start": {"offset_seconds": 1},
+                            "end": {"offsetMillis": 2000},
                         },
-                        {
-                            "start": 1.0,
-                            "end": 2.0,
-                            "text": "World",
-                            "speaker": "Speaker 2",
-                        },
-                    ],
-                }
-            ]
-        }
-    }
+                        "speaker": {"info": {"name": "Speaker 2"}},
+                    },
+                ]
+            }
+        },
+        {
+            "transcript": {
+                "chunks": [
+                    {
+                        "content": [{"type": "text", "value": "Hello"}],
+                        "timestamps": {"start_time_ms": 0, "end_time_ms": 1000},
+                        "speaker": {"label": "Speaker 1"},
+                    },
+                    {
+                        "content": [{"type": "text", "value": "World"}],
+                        "timing": {"from": "PT1S", "to": "PT2S"},
+                        "speaker": {"details": {"label": "Speaker 2"}},
+                    },
+                ]
+            }
+        },
+        {"type": "transcript.text.done", "text": "Hello World"},
+    ]
+
+    captured: dict[str, object] = {}
+
+    class _StreamingTranscriptions:
+        def __init__(self) -> None:
+            self.events = stream_events
+
+        def create(self, **kwargs):
+            captured["stream"] = kwargs.get("stream")
+            captured["chunking_strategy"] = kwargs.get("chunking_strategy")
+            if kwargs.get("stream"):
+                return iter(self.events)
+            return self.events[-1]
 
     class _Client(_DummyAzureOpenAI):
-        pass
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.audio.transcriptions = _StreamingTranscriptions()
 
     module = types.SimpleNamespace(
         AzureOpenAI=_Client,
@@ -120,21 +159,21 @@ def test_cli_azure_diarization_handles_nested_payload(
     )
     monkeypatch.setitem(sys.modules, "openai", module)
 
-    def fake_consume(response, on_chunk=None):
-        if on_chunk is not None:
-            on_chunk({"usage": {"output_tokens": 10}})
-        return nested_payload
-
     def fake_fetch_transcript(*_args, **_kwargs):
         raise RuntimeError(
             "No transcript available in requested languages: ['en']"
         )
 
-    monkeypatch.setattr(cli, "_consume_transcription_response", fake_consume)
+    progress_updates: list[float] = []
+
+    def record_progress(ratio: float, _detail: str | None = None) -> None:
+        progress_updates.append(ratio)
+
     monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
     monkeypatch.setattr(cli, "_prepare_audio_cache", lambda *_: str(wav_path))
     monkeypatch.setattr(cli, "_ensure_audio_segments", lambda *_: [str(wav_path)])
     monkeypatch.setattr(cli, "_resolve_video_cache_dir", lambda *_: str(tmp_path))
+    monkeypatch.setattr(cli, "_update_progress_bar", record_progress)
 
     exit_code = cli.run([
         "--url",
@@ -151,3 +190,6 @@ def test_cli_azure_diarization_handles_nested_payload(
     assert payload[0]["text"] == "Hello"
     assert payload[0]["speaker"] == "Speaker 1"
     assert payload[1]["text"] == "World"
+    assert payload[1]["speaker"] == "Speaker 2"
+    assert progress_updates, "Streaming 模式下应当触发进度更新"
+    assert captured["stream"] is True

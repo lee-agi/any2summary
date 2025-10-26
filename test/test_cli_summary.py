@@ -133,11 +133,17 @@ def test_run_with_azure_summary_outputs_summary(
 
     outbox_dir = tmp_path / "outbox"
     monkeypatch.setenv("PODCAST_TRANSFORMER_OUTBOX_DIR", str(outbox_dir))
+    def fake_generate_summary(
+        provided_segments: Any,
+        url: str,
+        prompt: str | None = None,
+    ) -> Dict[str, Any]:
+        return fake_bundle
 
     monkeypatch.setattr(
         cli,
         "generate_translation_summary",
-        lambda _segments, _url: fake_bundle,
+        fake_generate_summary,
     )
 
     exit_code = cli.run([
@@ -167,3 +173,61 @@ def test_run_with_azure_summary_outputs_summary(
     outbox_path = Path(outbox_summary)
     assert outbox_path.exists()
     assert outbox_path.read_text(encoding="utf-8") == fake_bundle["summary_markdown"]
+
+
+def test_run_with_custom_summary_prompt_file(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    segments = [
+        {"start": 0.0, "end": 1.0, "text": "Hi", "speaker": "Speaker"}
+    ]
+
+    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("自定义系统提示", encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli,
+        "fetch_transcript_with_metadata",
+        lambda *args, **kwargs: [dict(segment) for segment in segments],
+    )
+
+    fake_bundle = {
+        "summary_markdown": "# 标题\n内容",
+        "timeline_markdown": "# 标题\n时间线",
+        "metadata": {"title": "Demo"},
+        "total_words": 2,
+        "estimated_minutes": 1,
+        "file_base": "Demo",
+    }
+
+    captured_prompt: Dict[str, Any] = {}
+
+    def fake_generate(
+        provided_segments: Any,
+        url: str,
+        prompt: str | None = None,
+    ) -> Dict[str, Any]:
+        captured_prompt["prompt"] = prompt
+        return fake_bundle
+
+    monkeypatch.setattr(cli, "generate_translation_summary", fake_generate)
+
+    exit_code = cli.run(
+        [
+            "--url",
+            "https://youtu.be/testid",
+            "--azure-summary",
+            "--summary-prompt-file",
+            str(prompt_file),
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out.strip()
+    data = json.loads(output)
+    assert data["summary"] == fake_bundle["summary_markdown"]
+    assert captured_prompt["prompt"] == "自定义系统提示"

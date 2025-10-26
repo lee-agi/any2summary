@@ -10,9 +10,11 @@
 - 内置 Android 客户端回退逻辑，即使未配置 cookie 也能规避常见的 403 Forbidden 下载失败。
 - 自动检测超长（超过 Azure 1,500 秒限制）或超大音频并切分成多个片段，逐段提交 Azure，并通过流式返回实时刷新进度条。
 - 通过 `gpt-4o-transcribe-diarize` 返回的说话人分段信息，将不同说话人合并入字幕。
-- 兼容 Azure OpenAI `diarized_json` 响应中 `response.output` 的嵌套结构，即使 YouTube 无字幕也能利用 Azure 转写结果产出文本。
+- 兼容 Azure OpenAI `diarized_json` 响应中 `response.output[*].content` 等多层嵌套结构，自动提取 `segments`/`chunks` 字段，即使 YouTube 无字幕也能利用 Azure 转写结果产出文本。
+- 支持通过 `--azure-streaming/--no-azure-streaming` 控制 Azure 转写是否流式执行；启用时会实时刷新进度条，必要时可设置 `PODCAST_TRANSFORMER_DEBUG_PAYLOAD=1` 输出原始 chunk 便于排查。
 - 当 Azure 暂未返回说话人分段时，会退回空说话人列表并继续使用已有字幕，避免 CLI 直接失败。
 - 可选调用 Azure GPT-5，根据定制 system prompt 翻译与总结 ASR 片段。
+- 支持通过 `--summary-prompt-file` 指定外部 Prompt 配置文件，无需改动代码即可调整摘要策略。
 - 摘要结果以标准 Markdown 格式输出，包含封面、目录与时间轴表格，并自动写入缓存目录的 `summary.md` 文件。
 - 自动加载工作目录或 `PODCAST_TRANSFORMER_DOTENV` 指向的 `.env` 文件，简化凭据管理。
 - 提供 `--clean-cache` 与 `--check-cache` 选项，方便排查与清理缓存。
@@ -87,7 +89,9 @@ cp .env.example .env
   --fallback-language zh-Hans \
   --clean-cache \
   --azure-diarization \
+  --azure-streaming \
   --azure-summary \
+  --summary-prompt-file /absolute/path/to/prompt.txt \
   --known-speaker Alice=/absolute/path/to/alice.wav \
   --known-speaker Bob=/absolute/path/to/bob.wav \
   --known-speaker-name Charlie \
@@ -127,7 +131,9 @@ cp .env.example .env
 ./setup_and_run.sh \
   --url "https://www.youtube.com/watch?v=<video-id>" \
   --language en \
-  --azure-summary
+  --azure-streaming \
+  --azure-summary \
+  --summary-prompt-file ./prompts/summary_prompt.txt
 ```
 
 输出 JSON 将新增 `summary` 字段，内容遵循以下约定：
@@ -137,7 +143,9 @@ cp .env.example .env
 - 多人对话按说话人分段，保持第一人称述说；专业名词可带原文注释。
 - 同时会在对应视频缓存目录（例如 `~/.cache/podcast_transformer/youtube/<video_id>/summary.md`）写入一份结构化 Markdown 文件，含封面标题、目录与时间轴表格；CLI 输出会额外返回 `summary_path` 方便调用方读取该文件。
 
-若需调整文案风格，可通过 `AZURE_OPENAI_SUMMARY_DEPLOYMENT` 更换部署，或在调用 `generate_translation_summary` 时传入自定义 prompt。
+若需调整文案风格，可通过 `AZURE_OPENAI_SUMMARY_DEPLOYMENT` 更换部署，或在调用 CLI 时提供 `--summary-prompt-file` 指向自定义 prompt 文件；保持为空时则回退到内置的 `SUMMARY_PROMPT`。
+
+> 调试提示：若需检查 Azure 分段返回的原始数据，可在命令前设置 `PODCAST_TRANSFORMER_DEBUG_PAYLOAD=1`，缓存目录会生成 `debug_payload_*.json` 供分析。
 
 ## 示例脚本
 

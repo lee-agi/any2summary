@@ -37,12 +37,14 @@ def test_cli_outputs_transcript_with_speaker_annotations(monkeypatch, capsys):
         max_speakers: int | None = None,
         known_speakers=None,
         known_speaker_names=None,
+        streaming: bool = True,
     ):
         assert video_url == "https://youtu.be/example"
         assert language == "en"
         assert max_speakers is None
         assert known_speakers is None
         assert known_speaker_names is None
+        assert streaming is True
         return {
             "speakers": [
                 {"start": 0.0, "end": 3.0, "speaker": "Speaker A"},
@@ -85,6 +87,7 @@ def test_cli_fallbacks_to_azure_transcription(monkeypatch, capsys):
         max_speakers: int | None = None,
         known_speakers=None,
         known_speaker_names=None,
+        streaming: bool = True,
     ):
         return {
             "speakers": [
@@ -276,3 +279,42 @@ def test_cli_check_cache_reports_status(monkeypatch, tmp_path, capsys):
     assert payload["cache"]["path"] == cli._resolve_video_cache_dir(url)
     assert payload["cache"]["audio_wav_exists"] is True
     assert "audio.wav" in payload["cache"]["files"]
+
+
+def test_cli_can_disable_azure_streaming(monkeypatch, tmp_path):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "dummy")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.com")
+
+    segments = [{"start": 0.0, "end": 1.0, "text": "Hi"}]
+
+    monkeypatch.setattr(
+        cli,
+        "fetch_transcript_with_metadata",
+        lambda *_args, **_kwargs: [dict(segment) for segment in segments],
+    )
+
+    captured: dict[str, bool] = {}
+
+    def fake_perform_diarization(
+        *_args,
+        **kwargs,
+    ):
+        captured["streaming"] = kwargs.get("streaming")
+        return {
+            "speakers": [{"start": 0.0, "end": 1.0, "speaker": "Speaker"}],
+            "transcript": None,
+        }
+
+    monkeypatch.setattr(cli, "perform_azure_diarization", fake_perform_diarization)
+
+    exit_code = cli.run(
+        [
+            "--url",
+            "https://youtu.be/disable",
+            "--azure-diarization",
+            "--no-azure-streaming",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["streaming"] is False

@@ -65,6 +65,98 @@ DEFAULT_OUTBOX_DIR = (
 )
 
 
+_TIME_START_KEYS = (
+    "start",
+    "start_time",
+    "startTime",
+    "start_seconds",
+    "start_second",
+    "offset",
+    "begin",
+    "from",
+    "start_time_ms",
+    "startTimeMs",
+    "start_timeMillis",
+    "start_ms",
+    "startMillis",
+    "startMilliseconds",
+    "startMs",
+)
+_TIME_END_KEYS = (
+    "end",
+    "end_time",
+    "endTime",
+    "end_seconds",
+    "end_second",
+    "stop",
+    "to",
+    "finish",
+    "offset_end",
+    "end_time_ms",
+    "endTimeMs",
+    "end_timeMillis",
+    "end_ms",
+    "endMillis",
+    "endMilliseconds",
+    "endMs",
+)
+_TIME_DURATION_KEYS = (
+    "duration",
+    "duration_s",
+    "duration_seconds",
+    "duration_ms",
+    "durationMillis",
+    "durationMilliseconds",
+    "durationMs",
+    "length",
+)
+_TIME_CONTAINER_KEYS = (
+    "timestamp",
+    "timestamps",
+    "time",
+    "timing",
+    "time_range",
+    "timeRange",
+    "range",
+    "span",
+    "offsets",
+    "offset",
+    "start_end",
+    "startEnd",
+)
+_TEXT_VALUE_KEYS = (
+    "text",
+    "content",
+    "value",
+    "utterance",
+    "sentence",
+    "caption",
+)
+_TEXT_COLLECTION_KEYS = (
+    "alternatives",
+    "parts",
+    "lines",
+    "tokens",
+    "elements",
+    "chunks",
+    "segments",
+    "items",
+    "words",
+    "content",
+    "sentences",
+)
+_SPEAKER_KEYS = (
+    "speaker",
+    "speaker_label",
+    "speakerId",
+    "speaker_id",
+    "speaker_tag",
+    "speakerTag",
+    "label",
+    "name",
+)
+
+
 SUMMARY_PROMPT = '''
 你是一个可以帮助用户完成AI相关文章翻译和总结的助手。
 
@@ -152,9 +244,22 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         help="Call Azure OpenAI diarization to annotate speakers.",
     )
     parser.add_argument(
+        "--azure-streaming",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否以流式模式调用 Azure 转写（默认启用，可用 --no-azure-streaming 关闭）",
+    )
+    parser.add_argument(
         "--azure-summary",
         action="store_true",
         help="调用 Azure GPT-5 对 ASR 结果进行翻译与总结。",
+    )
+    parser.add_argument(
+        "--summary-prompt-file",
+        type=str,
+        default="./prompts/summary_prompt.txt",
+        dest="summary_prompt_file",
+        help="自定义 Azure 摘要系统 Prompt 的配置文件路径。",
     )
     parser.add_argument(
         "--max-speakers",
@@ -199,6 +304,11 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     _load_dotenv_if_present(os.getenv("PODCAST_TRANSFORMER_DOTENV"))
+
+    if args.summary_prompt_file and not args.azure_summary:
+        raise RuntimeError(
+            "--summary-prompt-file 仅能与 --azure-summary 搭配使用。"
+        )
 
     if args.clean_cache:
         cache_directory = _resolve_video_cache_dir(args.url)
@@ -253,6 +363,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             max_speakers=args.max_speakers,
             known_speakers=known_speaker_pairs,
             known_speaker_names=known_speaker_names,
+            streaming=args.azure_streaming,
         )
         diarization_segments = azure_payload.get("speakers") or []
         if not transcript_segments:
@@ -274,7 +385,14 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     summary_bundle: Optional[MutableMapping[str, Any]] = None
     summary_paths: Optional[Mapping[str, str]] = None
     if args.azure_summary:
-        summary_bundle = generate_translation_summary(merged_segments, args.url)
+        custom_prompt: Optional[str] = None
+        if args.summary_prompt_file:
+            custom_prompt = _load_summary_prompt_file(args.summary_prompt_file)
+        summary_bundle = generate_translation_summary(
+            merged_segments,
+            args.url,
+            prompt=custom_prompt,
+        )
         summary_paths = _write_summary_documents(
             args.url,
             summary_bundle.get("summary_markdown", ""),
@@ -451,8 +569,21 @@ def perform_azure_diarization(
     max_speakers: Optional[int] = None,
     known_speakers: Optional[List[Tuple[str, str]]] = None,
     known_speaker_names: Optional[Sequence[str]] = None,
+    streaming: bool = True,
 ) -> MutableMapping[str, Any]:
-    """Use Azure OpenAI GPT-4o diarization to identify speaker segments."""
+    """Use Azure OpenAI GPT-4o diarization to identify speaker segments.
+
+    Args:
+        video_url: Source video URL.
+        language: Preferred language code.
+        max_speakers: Optional limit on distinct speaker labels.
+        known_speakers: Optional list of (name, audio_path) tuples for voice hints.
+        known_speaker_names: Optional speaker name hints without audio samples.
+        streaming: Whether to enable Azure streaming responses for progress updates.
+
+    Returns:
+        A mapping containing `speakers` and `transcript` lists.
+    """
 
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -607,7 +738,7 @@ def perform_azure_diarization(
                     )
 
                 response = client.audio.transcriptions.create(
-                    **request_kwargs, stream=True
+                    **request_kwargs, stream=streaming
                 )
         except Exception as exc:  # pragma: no cover - depends on API behaviour
             if (
@@ -622,8 +753,37 @@ def perform_azure_diarization(
             raise
 
         response_payload = _consume_transcription_response(
-            response, on_chunk=_handle_stream_chunk
+            response,
+            on_chunk=_handle_stream_chunk if streaming else None,
         )
+        if not streaming:
+            ratio = _compute_progress_ratio(
+                processed_duration,
+                total_audio_duration,
+                produced_tokens,
+                total_estimated_tokens,
+                segments_done,
+                total_segments,
+            )
+            _update_progress_bar(
+                ratio,
+                _format_progress_detail(
+                    processed_duration,
+                    total_audio_duration,
+                    produced_tokens,
+                    total_estimated_tokens,
+                    segments_done,
+                    total_segments,
+                ),
+            )
+        if os.getenv("PODCAST_TRANSFORMER_DEBUG_PAYLOAD"):
+            debug_name = f"debug_payload_{index}.json"
+            debug_path = os.path.join(cache_directory, debug_name)
+            try:
+                with open(debug_path, "w", encoding="utf-8") as handle:
+                    json.dump(response_payload, handle, ensure_ascii=False, indent=2)
+            except OSError:
+                pass
         diarization_segments = _extract_diarization_segments(response_payload)
         transcript_segments = _extract_transcript_segments(response_payload)
 
@@ -877,24 +1037,305 @@ def _iter_nested_mappings(
                         stack.append(item)
 
 
-def _collect_segment_candidates(
-    payload: Mapping[str, Any], keys: Sequence[str]
-) -> List[List[MutableMapping[str, Any]]]:
-    """Collect candidate segment lists from nested payload structures."""
+_ISO_8601_DURATION_RE = re.compile(
+    r"^P(?:(?P<days>\d+(?:\.\d+)?)D)?"
+    r"(?:T(?:(?P<hours>\d+(?:\.\d+)?)H)?(?:(?P<minutes>\d+(?:\.\d+)?)M)?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?$",
+    re.IGNORECASE,
+)
 
-    candidates: List[List[MutableMapping[str, Any]]] = []
 
-    for mapping in _iter_nested_mappings(payload):
+def _parse_time_string(value: str) -> Optional[float]:
+    """Parse textual time representation into seconds."""
+
+    text = value.strip()
+    if not text:
+        return None
+
+    lower = text.lower()
+
+    match = _ISO_8601_DURATION_RE.match(text)
+    if match:
+        total = 0.0
+        days = match.group("days")
+        hours = match.group("hours")
+        minutes = match.group("minutes")
+        seconds = match.group("seconds")
+        if days:
+            total += float(days) * 86_400.0
+        if hours:
+            total += float(hours) * 3_600.0
+        if minutes:
+            total += float(minutes) * 60.0
+        if seconds:
+            total += float(seconds)
+        return total if total > 0.0 else 0.0
+
+    if ":" in text:
+        parts = text.split(":")
+        try:
+            parts = [float(part) for part in parts]
+        except ValueError:
+            return None
+        seconds = 0.0
+        for part in parts:
+            seconds = seconds * 60.0 + part
+        return seconds
+
+    if lower.endswith("ms"):
+        numeric = lower[:-2].strip()
+        try:
+            return float(numeric) / 1000.0
+        except ValueError:
+            return None
+    if lower.endswith("s") and lower[-2:] != "ms":
+        numeric = lower[:-1].strip()
+        try:
+            return float(numeric)
+        except ValueError:
+            return None
+
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _coerce_time_value(value: Any, key_hint: Optional[str] = None) -> Optional[float]:
+    """Convert a raw value into seconds, respecting millisecond hints."""
+
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            coerced = _coerce_time_value(item, key_hint)
+            if coerced is not None:
+                return coerced
+        return None
+
+    if isinstance(value, Mapping):
+        seconds_component = None
+        nanos_component = None
+
+        if "seconds" in value:
+            seconds_component = _coerce_time_value(value.get("seconds"), "seconds")
+        if "nanos" in value:
+            nanos_component = _coerce_time_value(value.get("nanos"), "nanos")
+        if "nanoSeconds" in value:
+            nanos_component = _coerce_time_value(value.get("nanoSeconds"), "nanos")
+        if seconds_component is not None or nanos_component is not None:
+            total = seconds_component or 0.0
+            if nanos_component is not None:
+                total += nanos_component / 1_000_000_000
+            return total
+
+        units = value.get("unit") or value.get("units")
+        unit_value = value.get("value")
+        if unit_value is not None:
+            numeric = _coerce_time_value(unit_value, units or key_hint)
+            if numeric is not None:
+                if units:
+                    lowered = str(units).lower()
+                    if "ms" in lowered or "millis" in lowered:
+                        return numeric / 1000.0
+                return numeric
+
+        candidate_keys = (
+            "start",
+            "end",
+            "offset",
+            "offset_seconds",
+            "offsetSeconds",
+            "offset_ms",
+            "offsetMs",
+            "offset_millis",
+            "offsetMillis",
+            "time",
+            "time_seconds",
+            "timeMillis",
+            "time_ms",
+            "milliseconds",
+            "millis",
+            "ms",
+        )
+        for candidate in candidate_keys:
+            if candidate in value:
+                nested = _coerce_time_value(value.get(candidate), candidate)
+                if nested is not None:
+                    return nested
+
+        # Explore nested dictionaries to find any numeric field.
+        for nested_value in value.values():
+            nested = _coerce_time_value(nested_value, key_hint)
+            if nested is not None:
+                return nested
+
+        return None
+
+    if isinstance(value, str):
+        return _parse_time_string(value)
+
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if key_hint:
+        lower = str(key_hint).lower()
+        if "nano" in lower:
+            return numeric / 1_000_000_000
+        if "ms" in lower or "millis" in lower:
+            numeric /= 1000.0
+
+    return _to_seconds(numeric)
+
+
+def _find_time_value(obj: Any, keys: Sequence[str], visited: Optional[set[int]] = None) -> Optional[float]:
+    """Recursively search for a time value using candidate keys."""
+
+    if visited is None:
+        visited = set()
+
+    if isinstance(obj, Mapping):
+        identifier = id(obj)
+        if identifier in visited:
+            return None
+        visited.add(identifier)
+
         for key in keys:
-            value = mapping.get(key)
-            if isinstance(value, list):
-                segment_list = [
-                    item for item in value if isinstance(item, MutableMapping)
-                ]
-                if segment_list:
-                    candidates.append(segment_list)
+            if key not in obj:
+                continue
+            value = obj[key]
+            if isinstance(value, Mapping):
+                nested = _find_time_value(value, keys, visited)
+                if nested is not None:
+                    return nested
+            else:
+                coerced = _coerce_time_value(value, key)
+                if coerced is not None:
+                    return coerced
 
-    return candidates
+        for container_key in _TIME_CONTAINER_KEYS:
+            value = obj.get(container_key)
+            if value is None:
+                continue
+            nested = _find_time_value(value, keys, visited)
+            if nested is not None:
+                return nested
+
+    elif isinstance(obj, list):
+        for item in obj:
+            nested = _find_time_value(item, keys, visited)
+            if nested is not None:
+                return nested
+
+    return None
+
+
+def _extract_time_range(segment: Mapping[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    """Extract start and end seconds from a diarization/transcript segment."""
+
+    start = _find_time_value(segment, _TIME_START_KEYS)
+    end = _find_time_value(segment, _TIME_END_KEYS)
+
+    if start is not None and end is None:
+        duration = _find_time_value(segment, _TIME_DURATION_KEYS)
+        if duration is not None:
+            end = start + duration
+
+    if start is None and end is not None:
+        duration = _find_time_value(segment, _TIME_DURATION_KEYS)
+        if duration is not None:
+            start = end - duration
+
+    if start is None:
+        duration = _find_time_value(segment, _TIME_DURATION_KEYS)
+        if duration is not None:
+            start = 0.0
+            end = duration if end is None else end
+
+    if start is not None and end is not None and end < start:
+        end = start
+
+    return start, end
+
+
+def _extract_speaker_label(segment: Mapping[str, Any]) -> Optional[str]:
+    """Derive speaker label from various field aliases."""
+
+    for key in _SPEAKER_KEYS:
+        if key not in segment:
+            continue
+        value = segment.get(key)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+        elif isinstance(value, Mapping):
+            nested = _extract_speaker_label(value)
+            if nested:
+                return nested
+
+    speaker_info = segment.get("speaker_info")
+    if isinstance(speaker_info, Mapping):
+        nested = _extract_speaker_label(speaker_info)
+        if nested:
+            return nested
+
+    for alias in ("info", "metadata", "details", "properties"):
+        nested_container = segment.get(alias)
+        if isinstance(nested_container, Mapping):
+            nested = _extract_speaker_label(nested_container)
+            if nested:
+                return nested
+        elif isinstance(nested_container, list):
+            for item in nested_container:
+                if isinstance(item, Mapping):
+                    nested = _extract_speaker_label(item)
+                    if nested:
+                        return nested
+
+    return None
+
+
+def _extract_text_value(obj: Any, visited: Optional[set[int]] = None) -> Optional[str]:
+    """Collect textual content from nested structures."""
+
+    if visited is None:
+        visited = set()
+
+    if isinstance(obj, str):
+        stripped = obj.strip()
+        return stripped or None
+
+    if isinstance(obj, Mapping):
+        identifier = id(obj)
+        if identifier in visited:
+            return None
+        visited.add(identifier)
+
+        for key in _TEXT_VALUE_KEYS:
+            if key not in obj:
+                continue
+            candidate = _extract_text_value(obj[key], visited)
+            if candidate:
+                return candidate
+
+        for key in _TEXT_COLLECTION_KEYS:
+            if key not in obj:
+                continue
+            candidate = _extract_text_value(obj[key], visited)
+            if candidate:
+                return candidate
+
+    if isinstance(obj, list):
+        pieces: List[str] = []
+        for item in obj:
+            candidate = _extract_text_value(item, visited)
+            if candidate:
+                pieces.append(candidate)
+        if pieces:
+            return " ".join(pieces).strip()
+
+    return None
 
 
 def _extract_diarization_segments(
@@ -902,25 +1343,22 @@ def _extract_diarization_segments(
 ) -> List[MutableMapping[str, float | str]]:
     """Extract diarization segments from verbose JSON payload."""
 
-    candidates = _collect_segment_candidates(payload, ("segments", "words", "items"))
-
     normalized: List[MutableMapping[str, float | str]] = []
     seen = set()
 
-    for candidate in candidates:
-        for raw_segment in candidate:
-            segment = _normalize_segment_entry(raw_segment)
-            if segment is None:
-                continue
-            fingerprint = (
-                round(segment.get("start", 0.0), 3),
-                round(segment.get("end", 0.0), 3),
-                segment.get("speaker"),
-            )
-            if fingerprint in seen:
-                continue
-            seen.add(fingerprint)
-            normalized.append(segment)
+    for mapping in _iter_nested_mappings(payload):
+        segment = _normalize_segment_entry(mapping)
+        if segment is None:
+            continue
+        fingerprint = (
+            round(segment.get("start", 0.0), 3),
+            round(segment.get("end", 0.0), 3),
+            segment.get("speaker"),
+        )
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        normalized.append(segment)
 
     if normalized:
         return normalized
@@ -933,25 +1371,22 @@ def _extract_transcript_segments(
 ) -> List[MutableMapping[str, float | str]]:
     """Extract transcript segments with text from payload."""
 
-    candidates = _collect_segment_candidates(payload, ("segments", "utterances", "results"))
-
     transcript_segments: List[MutableMapping[str, float | str]] = []
     seen = set()
 
-    for candidate in candidates:
-        for raw_segment in candidate:
-            normalized = _normalize_transcript_entry(raw_segment)
-            if normalized is None:
-                continue
-            fingerprint = (
-                round(normalized.get("start", 0.0), 3),
-                round(normalized.get("end", 0.0), 3),
-                normalized.get("text"),
-            )
-            if fingerprint in seen:
-                continue
-            seen.add(fingerprint)
-            transcript_segments.append(normalized)
+    for mapping in _iter_nested_mappings(payload):
+        normalized = _normalize_transcript_entry(mapping)
+        if normalized is None:
+            continue
+        fingerprint = (
+            round(normalized.get("start", 0.0), 3),
+            round(normalized.get("end", 0.0), 3),
+            normalized.get("text"),
+        )
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        transcript_segments.append(normalized)
 
     transcript_segments.sort(key=lambda item: item.get("start", 0.0))
     return transcript_segments
@@ -962,31 +1397,17 @@ def _normalize_segment_entry(
 ) -> Optional[MutableMapping[str, float | str]]:
     """Normalize a diarization segment into start/end/speaker fields."""
 
-    raw_start = segment.get("start")
-    if raw_start is None:
-        raw_start = segment.get("offset")
-    raw_end = segment.get("end")
-    raw_duration = segment.get("duration")
-
-    if raw_start is None:
+    if not isinstance(segment, Mapping):
         return None
 
-    start = _to_seconds(raw_start)
-    end = _to_seconds(raw_end) if raw_end is not None else None
-
-    if end is None and raw_duration is not None:
-        end = start + _to_seconds(raw_duration)
+    start, end = _extract_time_range(segment)
+    if start is None:
+        return None
 
     if end is None:
         end = start
 
-    speaker = (
-        segment.get("speaker")
-        or segment.get("speaker_label")
-        or segment.get("speakerId")
-        or segment.get("speaker_id")
-    )
-
+    speaker = _extract_speaker_label(segment)
     if speaker is None:
         return None
 
@@ -1002,24 +1423,16 @@ def _normalize_transcript_entry(
 ) -> Optional[MutableMapping[str, float | str]]:
     """Normalize transcript segment ensuring text exists."""
 
-    text = segment.get("text") or segment.get("display_text")
-    if not isinstance(text, str) or not text.strip():
+    if not isinstance(segment, Mapping):
         return None
 
-    raw_start = segment.get("start")
-    if raw_start is None:
-        raw_start = segment.get("offset")
-    raw_end = segment.get("end")
-    raw_duration = segment.get("duration")
-
-    if raw_start is None:
+    text = _extract_text_value(segment)
+    if not text:
         return None
 
-    start = _to_seconds(raw_start)
-    end = _to_seconds(raw_end) if raw_end is not None else None
-
-    if end is None and raw_duration is not None:
-        end = start + _to_seconds(raw_duration)
+    start, end = _extract_time_range(segment)
+    if start is None:
+        return None
 
     if end is None:
         end = start
@@ -1030,12 +1443,7 @@ def _normalize_transcript_entry(
         "text": text.strip(),
     }
 
-    speaker = (
-        segment.get("speaker")
-        or segment.get("speaker_label")
-        or segment.get("speakerId")
-        or segment.get("speaker_id")
-    )
+    speaker = _extract_speaker_label(segment)
     if speaker is not None:
         entry["speaker"] = str(speaker)
 
@@ -1123,6 +1531,25 @@ def _extract_openai_error_message(exc: Exception) -> str:
                 return message.strip()
     text = str(exc)
     return text.strip() or "Unknown Azure OpenAI error"
+
+
+def _load_summary_prompt_file(path: str) -> str:
+    """Load custom summary prompt content from a file."""
+
+    absolute_path = os.path.abspath(path)
+    if not os.path.isfile(absolute_path):
+        raise RuntimeError(f"摘要 Prompt 配置文件不存在：{path}")
+
+    try:
+        with open(absolute_path, "r", encoding="utf-8") as handle:
+            content = handle.read()
+    except OSError as exc:
+        raise RuntimeError(f"读取摘要 Prompt 配置文件失败：{path}") from exc
+
+    if not content.strip():
+        raise RuntimeError(f"摘要 Prompt 配置文件内容为空：{path}")
+
+    return content
 
 
 def generate_translation_summary(
@@ -1931,10 +2358,23 @@ def _consume_transcription_response(
     response: Any,
     on_chunk: Optional[Callable[[MutableMapping[str, Any]], None]] = None,
 ) -> MutableMapping[str, Any]:
+    collected: List[MutableMapping[str, Any]] = []
+
+    def _record(payload: MutableMapping[str, Any]) -> None:
+        if not payload:
+            return
+        collected.append(payload)
+        if on_chunk:
+            on_chunk(payload)
+
     if isinstance(response, MutableMapping):
         payload = _coerce_response_to_dict(response)
-        if on_chunk and payload:
-            on_chunk(payload)
+        if payload:
+            _record(payload)
+        if len(collected) > 1:
+            enriched = dict(payload)
+            enriched.setdefault("data", collected)
+            return enriched
         return payload
 
     if isinstance(response, Iterable) and not isinstance(response, (str, bytes)):
@@ -1944,11 +2384,19 @@ def _consume_transcription_response(
             if not payload:
                 continue
             final_payload = payload
-            if on_chunk:
-                on_chunk(payload)
-        return final_payload
+            _record(payload)
 
-    return _coerce_response_to_dict(response)
+        if not collected:
+            return final_payload
+
+        result = dict(final_payload) if final_payload else {}
+        result.setdefault("data", collected)
+        return result
+
+    payload = _coerce_response_to_dict(response)
+    if payload:
+        _record(payload)
+    return payload
 
 
 def _extract_usage_tokens(payload: Mapping[str, Any]) -> Optional[float]:
