@@ -47,3 +47,17 @@ def test_ensure_audio_segments_splits_large_wav(
         assert path.exists()
         assert path.name == f"audio_part{index:03d}.wav"
 
+
+def test_ensure_audio_segments_respects_azure_limit(tmp_path: Path) -> None:
+    """超过 Azure 限制的音频应当按默认阈值切分。"""
+
+    azure_safe_duration = cli.AUDIO_SEGMENT_SECONDS + 200.0
+    wav_path = tmp_path / "long_audio.wav"
+    _write_silent_wav(wav_path, duration_seconds=azure_safe_duration, sample_rate=10)
+
+    segments = cli._ensure_audio_segments(str(wav_path))
+
+    assert len(segments) >= 2
+    for segment in segments:
+        duration = cli._get_wav_duration(segment)
+        assert duration <= cli.AUDIO_SEGMENT_SECONDS + 1.0

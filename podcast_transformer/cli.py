@@ -9,6 +9,7 @@ emits JSON to stdout.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import base64
 import hashlib
 import json
@@ -46,9 +47,10 @@ ANDROID_YTDLP_USER_AGENT = (
     "Chrome/123.0.0.0 Mobile Safari/537.36"
 )
 
-MAX_WAV_DURATION_SECONDS = 3600.0
+AZURE_AUDIO_LIMIT_SECONDS = 1500.0
+MAX_WAV_DURATION_SECONDS = AZURE_AUDIO_LIMIT_SECONDS
 MAX_WAV_SIZE_BYTES = 100 * 1024 * 1024
-AUDIO_SEGMENT_SECONDS = 1800.0
+AUDIO_SEGMENT_SECONDS = 1400.0
 WAV_FRAME_CHUNK_SIZE = 32_768
 
 
@@ -1316,13 +1318,22 @@ def _ensure_audio_segments(wav_path: str) -> List[str]:
     base_name = os.path.splitext(os.path.basename(wav_path))[0]
     existing = _list_existing_segments(directory, base_name)
 
-    if not needs_split:
-        if existing:
-            return existing
-        return [wav_path]
-
     if existing:
-        return existing
+        requires_resplit = False
+        for segment_path in existing:
+            if _get_wav_duration(segment_path) > AUDIO_SEGMENT_SECONDS:
+                requires_resplit = True
+                break
+        if requires_resplit:
+            for segment_path in existing:
+                with contextlib.suppress(OSError):
+                    os.remove(segment_path)
+            existing = []
+        else:
+            return existing
+
+    if not needs_split:
+        return [wav_path]
 
     return _split_wav_file(wav_path, directory, base_name)
 
