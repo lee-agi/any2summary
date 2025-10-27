@@ -23,6 +23,7 @@ import tempfile
 import wave
 from datetime import datetime
 from collections import defaultdict
+from pathlib import Path
 from typing import (
     Any,
     Callable,
@@ -1852,8 +1853,8 @@ def _write_summary_documents(
     directory = _resolve_video_cache_dir(video_url)
     summary_filename = f"{file_base}_summary.md"
     timeline_filename = f"{file_base}_timeline.md"
-    summary_path = os.path.join(directory, summary_filename)
-    timeline_path = os.path.join(directory, timeline_filename)
+    summary_path = _ensure_unique_markdown_path(directory, summary_filename)
+    timeline_path = _ensure_unique_markdown_path(directory, timeline_filename)
 
     try:
         with open(summary_path, "w", encoding="utf-8") as summary_file:
@@ -1874,11 +1875,29 @@ def _write_summary_documents(
     if outbox_summary is not None:
         result["outbox_summary"] = outbox_summary
 
-    outbox_timeline = _copy_file_to_outbox(timeline_path)
-    if outbox_timeline is not None:
-        result["outbox_timeline"] = outbox_timeline
-
     return result
+
+
+def _ensure_unique_markdown_path(directory: str, filename: str) -> str:
+    base_path = Path(directory)
+    base_path.mkdir(parents=True, exist_ok=True)
+    candidate = base_path / filename
+    if not candidate.exists():
+        return str(candidate)
+
+    stem = candidate.stem
+    suffix = candidate.suffix or ".md"
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    attempt = 1
+    while True:
+        if attempt == 1:
+            new_name = f"{stem}_{timestamp}{suffix}"
+        else:
+            new_name = f"{stem}_{timestamp}_{attempt}{suffix}"
+        candidate = base_path / new_name
+        if not candidate.exists():
+            return str(candidate)
+        attempt += 1
 
 
 def _copy_file_to_outbox(source_path: str) -> Optional[str]:

@@ -162,8 +162,10 @@ def test_run_with_azure_summary_outputs_summary(
     timeline_path = Path(data["timeline_path"])
     assert summary_path.exists()
     assert timeline_path.exists()
-    assert summary_path.name == "【Demo】Demo-2024-M01_summary.md"
-    assert timeline_path.name == "【Demo】Demo-2024-M01_timeline.md"
+    assert summary_path.name.startswith("【Demo】Demo-2024-M01_summary")
+    assert summary_path.suffix == ".md"
+    assert timeline_path.name.startswith("【Demo】Demo-2024-M01_timeline")
+    assert timeline_path.suffix == ".md"
     assert summary_path.read_text(encoding="utf-8") == fake_bundle["summary_markdown"]
     assert timeline_path.read_text(encoding="utf-8") == fake_bundle["timeline_markdown"]
     assert data["total_words"] == fake_bundle["total_words"]
@@ -173,11 +175,7 @@ def test_run_with_azure_summary_outputs_summary(
     outbox_path = Path(outbox_summary)
     assert outbox_path.exists()
     assert outbox_path.read_text(encoding="utf-8") == fake_bundle["summary_markdown"]
-    outbox_timeline = data["summary_paths"].get("outbox_timeline")
-    assert outbox_timeline
-    timeline_outbox_path = Path(outbox_timeline)
-    assert timeline_outbox_path.exists()
-    assert timeline_outbox_path.read_text(encoding="utf-8") == fake_bundle["timeline_markdown"]
+    assert "outbox_timeline" not in data["summary_paths"]
 
 
 def test_run_with_custom_summary_prompt_file(
@@ -238,7 +236,7 @@ def test_run_with_custom_summary_prompt_file(
     assert captured_prompt["prompt"] == "自定义系统提示"
 
 
-def test_write_summary_documents_copies_to_default_outbox(monkeypatch, tmp_path):
+def test_write_summary_documents_copies_to_default_outbox_and_adds_suffix(monkeypatch, tmp_path):
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
 
@@ -251,6 +249,9 @@ def test_write_summary_documents_copies_to_default_outbox(monkeypatch, tmp_path)
         lambda *_args, **_kwargs: str(cache_dir),
     )
 
+    existing_summary = cache_dir / "demo_summary.md"
+    existing_summary.write_text("旧摘要", encoding="utf-8")
+
     result = cli._write_summary_documents(
         "https://youtu.be/default",
         "# 摘要\n内容",
@@ -262,3 +263,12 @@ def test_write_summary_documents_copies_to_default_outbox(monkeypatch, tmp_path)
     assert outbox_summary
     assert Path(outbox_summary).exists()
     assert Path(outbox_summary).parent == default_outbox
+    summary_path = Path(result["summary"])
+    assert summary_path.exists()
+    assert summary_path.name.startswith("demo_summary")
+    assert summary_path.suffix == ".md"
+    timeline_path = Path(result["timeline"])
+    assert timeline_path.exists()
+    assert timeline_path.name.startswith("demo_timeline")
+    assert timeline_path.suffix == ".md"
+    assert "outbox_timeline" not in result
