@@ -1709,7 +1709,7 @@ def _compose_summary_documents(
         }
     )
 
-    title_raw = video_metadata.get("title")
+    title_raw = re.sub(r'[:\/\\`]', '', str(video_metadata.get("title") or ""))
     title = str(title_raw or "未知标题").strip() or "未知标题"
     publish_date_raw = str(video_metadata.get("upload_date") or "").strip()
     publish_date = _format_publish_date(publish_date_raw)
