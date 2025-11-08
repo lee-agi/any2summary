@@ -7,3 +7,5 @@ build/
 podcast_transformer.egg-info/
 cookies.txt
 .vscode
+.env
+dist/

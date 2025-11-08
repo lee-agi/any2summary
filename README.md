@@ -64,7 +64,7 @@ export AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT="gpt-4o-transcribe-diarize"
 # export AZURE_OPENAI_CHUNKING_STRATEGY='{"type": "server_vad", "threshold": 0.6}'
 # 可选：配置 GPT-5 翻译/总结调用所用的 API 版本与部署名称
 export AZURE_OPENAI_SUMMARY_API_VERSION="2025-01-01-preview"
-export AZURE_OPENAI_SUMMARY_DEPLOYMENT="llab-gpt-5"
+export AZURE_OPENAI_SUMMARY_DEPLOYMENT="gpt-5"
 ```
 
 可通过 `--max-speakers` 对说话人数量做最佳努力限制；超出时会将较小说话人映射到主要说话人之一。
@@ -94,10 +94,6 @@ cp .env.example .env
   --azure-streaming \
   --azure-summary \
   --summary-prompt-file /absolute/path/to/prompt.txt \
-  --known-speaker Alice=/absolute/path/to/alice.wav \
-  --known-speaker Bob=/absolute/path/to/bob.wav \
-  --known-speaker-name Charlie \
-  --max-speakers 2 \
   --pretty
 ```
 
@@ -129,7 +125,7 @@ cp .env.example .env
 
 ## GPT-5 翻译与总结
 
-启用 `--azure-summary` 选项即可在原始字幕/转写结果基础上，调用 Azure GPT-5（默认部署名 `llab-gpt-5`）生成翻译与总结，system prompt 详见 `SUMMARY_PROMPT`。命令示例：
+启用 `--azure-summary` 选项即可在原始字幕/转写结果基础上，调用 Azure GPT-5（默认部署名 `gpt-5`）生成翻译与总结，system prompt 详见 `SUMMARY_PROMPT`。命令示例：
 
 ```bash
 ./setup_and_run.sh \
