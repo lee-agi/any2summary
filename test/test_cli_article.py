@@ -187,6 +187,7 @@ def test_cli_processes_article_summary(
         assert video_url == target_url
         assert segments == bundle["segments"]
         assert metadata == bundle["metadata"]
+        assert prompt == cli.ARTICLE_SUMMARY_PROMPT
         return summary_payload
 
     monkeypatch.setattr(cli, "generate_translation_summary", fake_generate_summary)
@@ -203,3 +204,80 @@ def test_cli_processes_article_summary(
     assert payload["summary_path"].endswith("demo_summary.md")
     assert os.path.exists(payload["summary_path"])
 
+
+def test_cli_article_custom_prompt_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """文章模式应优先使用 --article-summary-prompt-file 指定的 Prompt。"""
+
+    target_url = "https://www.example.com/posts/demo"
+    article_prompt_path = tmp_path / "article_prompt.txt"
+    custom_prompt_text = "# 自定义文章 Prompt"
+    article_prompt_path.write_text(custom_prompt_text, encoding="utf-8")
+
+    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+
+    def fake_fetch_transcript(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("unable to fetch transcript")
+
+    def fail_azure(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover - 防御
+        raise AssertionError("should not call azure diarization")
+
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
+    monkeypatch.setattr(cli, "perform_azure_diarization", fail_azure)
+
+    bundle = {
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "First paragraph."},
+        ],
+        "metadata": {
+            "title": "Article",
+            "webpage_url": target_url,
+        },
+        "raw_html_path": str(tmp_path / "article.html"),
+        "content_path": str(tmp_path / "article.txt"),
+        "metadata_path": str(tmp_path / "article.json"),
+        "icon_path": str(tmp_path / "icon.png"),
+    }
+
+    (tmp_path / "article.html").write_text("raw", encoding="utf-8")
+    (tmp_path / "article.txt").write_text("text", encoding="utf-8")
+    (tmp_path / "article.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "icon.png").write_bytes(b"icon")
+
+    monkeypatch.setattr(
+        cli, "fetch_article_assets", lambda url: bundle if url == target_url else None
+    )
+
+    summary_payload = {
+        "summary_markdown": "# Summary\n",
+        "timeline_markdown": "## Timeline\n",
+        "metadata": {"title": "Article"},
+        "file_base": "article",
+    }
+
+    def fake_generate_summary(
+        segments: list[dict[str, Any]],
+        video_url: str,
+        prompt: str | None = None,
+        metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        assert prompt == custom_prompt_text
+        return summary_payload
+
+    monkeypatch.setattr(cli, "generate_translation_summary", fake_generate_summary)
+
+    exit_code = cli.run(
+        [
+            "--url",
+            target_url,
+            "--language",
+            "en",
+            "--azure-summary",
+            "--article-summary-prompt-file",
+            str(article_prompt_path),
+        ]
+    )
+
+    assert exit_code == 0
+    json.loads(capsys.readouterr().out)

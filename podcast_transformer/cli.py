@@ -180,6 +180,24 @@ SUMMARY_PROMPT = '''
 '''
 
 
+ARTICLE_SUMMARY_PROMPT = '''
+你是一个英文文章翻译和总结智能体。你的任务是分析用户提供的文章，自动抓取原文（包括关键图表等）。
+
+你的输出包含:
+## 总结
+最好不超过5句话总结文章的核心观点。
+## 要点
+1. 要点最好以层次化、结构化的方式展现。
+2. 每一个要点必须是一个观点/结论/事实。
+3. 要点之间最好有逻辑关系，当然要以忠实于原文为基础。
+## 翻译要求
+1. 如果是非中文，先将非关键信息翻译成中文，关键表达最好不翻译，若要翻译务必要附带上原始表达，以保留最准确的原始语言所传达的信息。
+2. 专业词汇和人名不要翻译，例如`agent`、`llm`、`Sam`不要翻译，或后面加上原始词，比如费曼图（Feynman diagram）。
+3. 翻译过程中千万不要压缩、省略或遗漏任何原始语言传达的信息，仅可以删掉一些无意义的口语表达或广告内容，比如uh、yeah等。
+4. 将你认为重要的、insightful、非共识的内容markdown加粗标识，以便阅读，但加粗内容不宜太多。
+'''
+
+
 def _load_dotenv_if_present(explicit_path: Optional[str] = None) -> None:
     """Load environment variables from a dotenv file when available."""
 
@@ -280,6 +298,12 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         help="自定义 Azure 摘要系统 Prompt 的配置文件路径。",
     )
     parser.add_argument(
+        "--article-summary-prompt-file",
+        type=str,
+        dest="article_summary_prompt_file",
+        help="针对网页文章的专用 Prompt 文件路径，仅在 --azure-summary 时生效。",
+    )
+    parser.add_argument(
         "--max-speakers",
         type=int,
         default=None,
@@ -331,6 +355,11 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     if args.summary_prompt_file and not args.azure_summary:
         raise RuntimeError(
             "--summary-prompt-file 仅能与 --azure-summary 搭配使用。"
+        )
+
+    if args.article_summary_prompt_file and not args.azure_summary:
+        raise RuntimeError(
+            "--article-summary-prompt-file 仅能与 --azure-summary 搭配使用。"
         )
 
     if args.clean_cache:
@@ -477,6 +506,14 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         custom_prompt: Optional[str] = None
         if args.summary_prompt_file:
             custom_prompt = _load_summary_prompt_file(args.summary_prompt_file)
+        article_prompt: Optional[str] = None
+        if article_bundle is not None and args.article_summary_prompt_file:
+            article_prompt = _load_summary_prompt_file(
+                args.article_summary_prompt_file
+            )
+            custom_prompt = article_prompt
+        if article_bundle is not None and custom_prompt is None:
+            custom_prompt = ARTICLE_SUMMARY_PROMPT
         summary_bundle = generate_translation_summary(
             merged_segments,
             args.url,

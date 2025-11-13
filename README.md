@@ -18,7 +18,7 @@
 - 可选调用 Azure GPT-5 Pro（默认部署 `gpt-5-pro`），通过 Responses API 翻译与总结 ASR 片段，可使用 `--summary-prompt-file` 定制提示词。
 - 支持通过 `--summary-prompt-file` 指定外部 Prompt 配置文件，无需改动代码即可调整摘要策略。
 - 摘要结果以标准 Markdown 格式输出，包含封面、目录与时间轴表格，并自动写入缓存目录的 `summary.md` 文件。
-- 对不支持音频下载的网页文章，会自动抓取正文段落与站点图标，将原始 HTML、解析后的纯文本及元数据缓存为 `article_raw.html`、`article_content.txt`、`article_metadata.json`，并无缝接入摘要流程（覆盖测试见 `test/test_cli_article.py`）。
+ - 对不支持音频下载的网页文章，会自动抓取正文段落与站点图标，将原始 HTML、解析后的纯文本及元数据缓存为 `article_raw.html`、`article_content.txt`、`article_metadata.json`，并无缝接入摘要流程（覆盖测试见 `test/test_cli_article.py`），摘要默认使用面向文章的专用 Prompt，并可通过 `--article-summary-prompt-file` 单独配置。
 - 自动加载工作目录或 `PODCAST_TRANSFORMER_DOTENV` 指向的 `.env` 文件，简化凭据管理。
 - 提供 `--clean-cache` 与 `--check-cache` 选项，方便排查与清理缓存。
 - 命令行输出 JSON，可通过 `--pretty` 选项进行格式化。
@@ -152,7 +152,7 @@ cp .env.example .env
 
 ### 处理网页文章
 
-若传入的 URL 属于博客/文档网页且 `yt_dlp` 无法提取音频，CLI 会改为抓取网页正文及站点图标，并将内容拆分为段落 `segments` 供后续摘要使用；相关缓存文件位于对应缓存目录下的 `article_raw.html`、`article_content.txt` 与 `article_metadata.json`。此流程与 Azure 摘要无缝衔接，因此可直接对文章链接执行 `--azure-summary` 获取翻译与总结。
+若传入的 URL 属于博客/文档网页且 `yt_dlp` 无法提取音频，CLI 会改为抓取网页正文及站点图标，并将内容拆分为段落 `segments` 供后续摘要使用；相关缓存文件位于对应缓存目录下的 `article_raw.html`、`article_content.txt` 与 `article_metadata.json`。此流程与 Azure 摘要无缝衔接，因此可直接对文章链接执行 `--azure-summary` 获取翻译与总结，默认采用专门为文章设计的 Prompt（可通过 `--article-summary-prompt-file` 指定单独的文章 Prompt；若提供 `--summary-prompt-file` 则仍以自定义 Prompt 为准）。
 
 ## 示例脚本
 
