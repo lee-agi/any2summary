@@ -81,7 +81,7 @@ The script loads `.env` located in the same directory and calls `setup_and_run.s
 | `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_ENDPOINT` | None | Required for all Azure features |
 | `AZURE_OPENAI_API_VERSION` | `2025-03-01-preview` | Azure diarization API version |
 | `AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT` | `gpt-4o-transcribe-diarize` | Transcription/dearization deployment name |
-| `AZURE_OPENAI_SUMMARY_DEPLOYMENT` | `llab-gpt-5-pro` | Summary model deployment |
+| `AZURE_OPENAI_SUMMARY_DEPLOYMENT` | `gpt-5-pro` | Summary model deployment |
 | `AZURE_OPENAI_DOMAIN_DEPLOYMENT` | Uses summary deployment | Infers domain tags from summaries |
 | `AZURE_OPENAI_SUMMARY_API_VERSION` | `2025-01-01-preview` | API version for Chat Completions mode |
 | `AZURE_OPENAI_USE_RESPONSES` | Based on deployment suffix | Opt into Responses API (`1/true/yes` or `*-pro`) |

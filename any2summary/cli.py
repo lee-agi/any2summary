@@ -1822,7 +1822,7 @@ def generate_translation_summary(
             "Azure OpenAI 凭据缺失。请设置 AZURE_OPENAI_API_KEY与 AZURE_OPENAI_ENDPOINT。"
         )
 
-    deployment = os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT") or "llab-gpt-5-pro"
+    deployment = os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT") or "gpt-5-pro"
 
     instruction = prompt or _load_default_summary_prompt()
     timeline = _format_segments_for_summary(segments)
@@ -1958,7 +1958,6 @@ def _infer_domain_from_summary(raw_summary: str) -> Optional[str]:
     deployment = (
         os.getenv("AZURE_OPENAI_DOMAIN_DEPLOYMENT")
         or os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT")
-        or "llab-gpt-5-pro"
     )
 
     use_responses = deployment.endswith("-pro") or str(

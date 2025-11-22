@@ -81,7 +81,7 @@ python -m any2summary.cli \
 | `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_ENDPOINT` | 无 | Azure OpenAI 凭据，调用转写、摘要、领域检测必需 |
 | `AZURE_OPENAI_API_VERSION` | `2025-03-01-preview` | Azure Diarization API 版本 |
 | `AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT` | `gpt-4o-transcribe-diarize` | 语音转写/说话人分离部署名 |
-| `AZURE_OPENAI_SUMMARY_DEPLOYMENT` | `llab-gpt-5-pro` | 摘要模型部署名，可与 Responses API 搭配 |
+| `AZURE_OPENAI_SUMMARY_DEPLOYMENT` | `gpt-5-pro` | 摘要模型部署名，可与 Responses API 搭配 |
 | `AZURE_OPENAI_DOMAIN_DEPLOYMENT` | 同 `AZURE_OPENAI_SUMMARY_DEPLOYMENT` | 基于摘要反推领域标签时使用 |
 | `AZURE_OPENAI_SUMMARY_API_VERSION` | `2025-01-01-preview` | 摘要（Chat Completions）API 版本 |
 | `AZURE_OPENAI_USE_RESPONSES` | 取决于部署后缀 | 为 `1/true` 或部署名以 `-pro` 结尾时，摘要与领域检测改走 Responses API |

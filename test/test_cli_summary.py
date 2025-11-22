@@ -31,7 +31,7 @@ def _ensure_openai_removed() -> None:
 def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
-    monkeypatch.setenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", "llab-gpt-5-pro")
+    monkeypatch.setenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", "gpt-5-pro")
     monkeypatch.delenv("AZURE_OPENAI_SUMMARY_API_VERSION", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", raising=False)
 
@@ -107,7 +107,7 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     assert len(requests) == 2
     summary_request = requests[0]
     domain_request = requests[1]
-    assert summary_request["model"] == "llab-gpt-5-pro"
+    assert summary_request["model"] == "gpt-5-pro"
     request_input = summary_request["input"]
     assert isinstance(request_input, list)
     system_msg = request_input[0]
@@ -120,7 +120,7 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     assert "Hello world" in user_msg["content"][0]["text"]
     assert "00:00:00" in user_msg["content"][0]["text"]
     assert "## 欢迎交流与合作" in summary
-    assert domain_request["model"] == "llab-gpt-5-pro"
+    assert domain_request["model"] == "gpt-5-pro"
     domain_input = domain_request["input"]
     assert isinstance(domain_input, list)
     assert domain_input[0]["content"][0]["text"] == cli.DOMAIN_PROMPT
@@ -132,7 +132,7 @@ def test_generate_translation_summary_infers_domain_via_azure(
 ) -> None:
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
-    monkeypatch.setenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", "llab-gpt-5-pro")
+    monkeypatch.setenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", "gpt-5-pro")
     segments = [
         {"start": 0.0, "end": 1.0, "speaker": "Speaker", "text": "Tech talk"}
     ]
@@ -176,7 +176,7 @@ def test_generate_translation_summary_infers_domain_via_azure(
 def test_generate_translation_summary_supports_legacy_chat(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
-    monkeypatch.setenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", "llab-gpt-5")
+    monkeypatch.setenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", "gpt-5")
     monkeypatch.delenv("AZURE_OPENAI_USE_RESPONSES", raising=False)
 
     segments = [
@@ -215,7 +215,7 @@ def test_generate_translation_summary_supports_legacy_chat(monkeypatch: pytest.M
     assert len(requests) == 2
     summary_request = requests[0]
     domain_request = requests[1]
-    assert summary_request["model"] == "llab-gpt-5"
+    assert summary_request["model"] == "gpt-5"
     messages = summary_request["messages"]
     assert messages[0]["role"] == "system"
     assert messages[1]["role"] == "user"
