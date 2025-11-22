@@ -1,102 +1,103 @@
 # any2summary
 
-`any2summary` 是一个面向播客、视频与网页文章的命令行工具，可在本地一次性完成“下载/转写 → 说话人分离 → 摘要导出”整条链路。CLI 默认输出结构化 JSON，并在启用 Azure 摘要后生成带封面、目录与时间轴表格的 Markdown，帮助你把长内容快速同步到知识库或笔记工具，大幅提高知识获取效率。
+`any2summary` is a command-line toolkit that handles the entire pipeline for podcasts, videos, and long-form articles—download, transcription, optional Azure speaker diarization, and Markdown summarization—directly on your local machine. The CLI emits structured JSON by default, and when Azure summarization is enabled it also writes Markdown with a cover, table of contents, and timeline table so long-form content can drop into your note-taking system with minimal effort.
 
-## 适用场景
-- **YouTube / Bilibili / Spotify / Apple Podcasts**：提取字幕，必要时下载音频并调用 Azure OpenAI `gpt-4o-transcribe-diarize` 获得说话人标签。
-- **网页文章/文档**：无法下载音频时自动落到文章模式，抓取正文与站点元数据，再调用专用 Prompt 生成总结。
-- **批量链接**：`--url` 支持逗号分隔多个链接，CLI 会并发处理并按输入顺序输出结果，方便批量整理内容。
+> 📘 Looking for the Simplified Chinese version? See `README.zh.md` in the project root. Both documents share the same structure and should stay in sync.
 
-## 功能总览
-- `youtube-transcript-api` + `yt_dlp` + `ffmpeg` 负责字幕/音频获取，自动处理 Referer、User-Agent 与 Android 回退逻辑，规避 403 失败。
-- 音频超出 Azure 1,500 秒限制时，自动切分为 ≤1,400 秒的 WAV 片段并依序上传，处理进度可通过 Azure 流式输出实时刷新。
-- Azure 说话人分离结果与原字幕自动对齐，若 Azure 返回空结果会回退到已有字幕，避免流程中断。
-- 无字幕或音频专用链接会自动触发 Azure 转写，若想在字幕已存在时也使用 Azure，可显式添加 `--force-azure-diarization`。
-- `--azure-summary` 会调用 Azure GPT-5（Responses API 或 Chat 完成）生成 Markdown 摘要，并另存到 `ANY2SUMMARY_OUTBOX_DIR`（默认指向 Obsidian outbox）。
-- 文章模式（`fetch_article_assets`）会缓存 `article_raw.html`、`article_content.txt`、`article_metadata.json` 并套用 `ARTICLE_SUMMARY_PROMPT`；可用 `--article-summary-prompt-file` 单独调参。
-- `--clean-cache` 用于排查缓存；`ANY2SUMMARY_DOTENV` 允许自动加载 `.env` 并兼容历史 `PODCAST_TRANSFORMER_*` 变量。
-- CLI 输出默认使用缩进 JSON，批量模式会顺序打印多个完整 JSON 文档，便于直接复制或通过流式解析消费。
+## Use Cases
+- **YouTube / Bilibili / Spotify / Apple Podcasts**: fetch captions when available, or download audio plus run Azure OpenAI `gpt-4o-transcribe-diarize` for transcripts and speaker labels.
+- **Web articles / documentation**: fall back to article mode when audio cannot be downloaded, capturing page text and metadata before summarization.
+- **Batch processing**: pass a comma-separated list to `--url`; the CLI processes links concurrently and prints results in the original order.
 
-## 快速开始
+## Feature Highlights
+- `youtube-transcript-api` + `yt_dlp` + `ffmpeg` handle caption/audio retrieval with automatic Referer, User-Agent, and Android fallback tuning to avoid 403 errors.
+- Audio longer than Azure’s 1,500-second limit is split into ≤1,400-second WAV chunks and uploaded sequentially; streaming mode refreshes progress in real time.
+- Azure diarization results align with existing captions; when Azure returns empty segments the CLI falls back to the downloaded subtitles to keep the pipeline moving.
+- Audio-only links or captionless videos automatically trigger the Azure transcription flow; add `--force-azure-diarization` to invoke Azure even when captions exist.
+- `--azure-summary` calls Azure GPT-5 (Responses API or Chat Completions) to generate Markdown summaries and copies them into `ANY2SUMMARY_OUTBOX_DIR` (defaults to an Obsidian outbox folder).
+- Article mode (`fetch_article_assets`) caches `article_raw.html`, `article_content.txt`, and `article_metadata.json`, then applies `ARTICLE_SUMMARY_PROMPT`; `--article-summary-prompt-file` overrides the default.
+- `--clean-cache` clears cached artifacts for the current URL; `ANY2SUMMARY_DOTENV` automatically loads a `.env` file and remains compatible with legacy `PODCAST_TRANSFORMER_*` variables.
+- CLI output is always indented JSON; in batch mode each job prints a separate JSON document, making it easy to stream-parse.
 
-### 先决条件
+## Quick Start
+
+### Prerequisites
 - Python 3.10+
-- `ffmpeg`（macOS 可 `brew install ffmpeg`，Linux/Windows 参考官方文档）
-- 可访问 YouTube / 目标站点与 Azure OpenAI 的网络环境（如需代理，可在 `setup_and_run.sh` 中自定义 `http_proxy/https_proxy`）
-- Azure OpenAI 资源及部署（若需说话人分离或摘要）
+- `ffmpeg` (install via `brew install ffmpeg` on macOS or follow the official docs for other platforms)
+- Network access to YouTube/your target site plus Azure OpenAI (adjust the proxy variables in `setup_and_run.sh` if needed)
+- Azure OpenAI resource and deployments for transcription/summary features
 
-### 安装方式
-1. **PyPI**（推荐）：`pip install any2summary`
-2. **源码安装**：`cd any2summary && pip install .`
-3. **手动安装依赖**：`pip install youtube-transcript-api yt-dlp openai "httpx[socks]"`
-4. **一键脚本**：`cd any2summary && ./setup_and_run.sh --help`（脚本会创建 `.venv`、安装依赖并在开头设置代理变量）
+### Installation Options
+1. **PyPI (recommended):** `pip install any2summary`
+2. **From source:** `cd any2summary && pip install .`
+3. **Manual dependencies:** `pip install youtube-transcript-api yt-dlp openai "httpx[socks]"`
+4. **Bootstrap script:** `cd any2summary && ./setup_and_run.sh --help` (creates `.venv`, installs deps, and exports proxy variables near the top)
 
-### 最小示例
+### Minimal Example
 ```bash
 python -m any2summary.cli \
   --url "https://www.youtube.com/watch?v=<video-id>" \
   --language en
 ```
-- 默认只抓取字幕并输出 JSON；若目标无字幕会自动调用 Azure 转写，如需无论是否存在字幕都强制使用 Azure 说话人分离，请添加 `--force-azure-diarization`。
-- 支持在 `--url` 中填入多个逗号分隔的链接，CLI 会自动并发处理。
+- Captions are returned as JSON by default. When the target lacks captions, Azure transcription triggers automatically. Add `--force-azure-diarization` to invoke Azure even if captions already exist.
+- Supply multiple comma-separated links in `--url` to process them concurrently while preserving order.
 
-### 示例脚本
+### Sample Script
 ```bash
 ./run_example.sh "https://www.youtube.com/watch?v=<video-id>"
 ```
-脚本会加载同目录下 `.env` 并调用 `setup_and_run.sh`，适合快速验证 Azure 凭据是否配置正确。
+The script loads `.env` located in the same directory and calls `setup_and_run.sh`, making it convenient to verify Azure credentials.
 
-## CLI 参数速查
+## CLI Reference
 
-| 参数 | 类型 / 默认 | 必填 | 说明 | 典型用途 |
+| Argument | Type / Default | Required | Description | Typical Usage |
 | --- | --- | --- | --- | --- |
-| `--url` | 字符串，支持逗号分隔多个链接 | ✔ | 待处理的视频、音频或文章链接；多链接会并发执行并按输入顺序输出 | 批量生成字幕/摘要 |
-| `--language` | 字符串，默认 `en` |  | 优先使用的字幕或转写语言代码 | 控制字幕/摘要语言 |
-| `--fallback-language` | 可重复，默认空 |  | 主语言缺失时依次尝试的语言列表 | 跨语言字幕容错 |
-| `-V/--version` | 标志 |  | 打印版本信息并退出 | 诊断安装版本 |
-| `--azure-streaming` / `--no-azure-streaming` | 布尔，默认启用 |  | 控制 Azure 转写是否流式返回；关闭后将整体等待 | 需要最小日志或非交互环境 |
-| `--force-azure-diarization` | 标志 |  | 即使字幕可用也强制走 Azure 流程（文章链接会忽略该选项，Apple Podcasts 等音频源会自动开启） | 确保使用 Azure 结果 |
-| `--azure-summary` | 标志 |  | 基于字幕/转写结果调用 Azure GPT-5 输出 Markdown 摘要并写入缓存 `summary.md` | 生成摘要/翻译稿 |
-| `--summary-prompt-file` | 文件路径 |  | 自定义视频/音频摘要 Prompt（默认使用 `./prompts/summary_prompt.txt`） | 调整摘要风格 |
-| `--article-summary-prompt-file` | 文件路径 |  | 自定义文章模式 Prompt，仅在网页文章且启用 `--azure-summary` 时生效（默认使用 `./prompts/article_prompt.txt`） | 独立优化文章摘要 |
-| `--max-speakers` | 整数 |  | Azure 说话人分离的最大说话人数上限 | 会议/访谈设定说话人范围 |
-| `--known-speaker` | `name=path.wav` 可重复 |  | 为 Azure 提供已知说话人的参考音频 | 精细标注常驻嘉宾 |
-| `--known-speaker-name` | 字符串，可重复 |  | 只提供说话人姓名提示，无需音频 | 给 Azure 额外语义提示 |
-| `--clean-cache` | 标志 |  | 开始前清理当前 URL 对应缓存目录 | 重新下载 / 排障 |
+| `--url` | String, comma-separated | ✔ | Video/audio/article URLs; processed concurrently in the given order | Batch caption/summary export |
+| `--language` | String, default `en` |  | Preferred language for captions/transcripts | Control transcript language |
+| `--fallback-language` | Repeatable |  | Extra language codes to try when the primary one is missing | Cross-language resilience |
+| `-V/--version` | Flag |  | Display version and exit | Verify installed version |
+| `--azure-streaming` / `--no-azure-streaming` | Boolean, default on |  | Whether Azure transcription streams chunk updates | Minimize CLI noise or keep progress bars |
+| `--force-azure-diarization` | Flag |  | Force Azure diarization even when captions are available (ignored for article links; automatically on for Apple Podcasts & similar audio URLs) | Ensure Azure results every time |
+| `--azure-summary` | Flag |  | Use Azure GPT-5 to produce Markdown summaries/timelines saved to `summary.md` in cache | Generate polished summaries |
+| `--summary-prompt-file` | Path |  | Custom prompt for audio/video summaries (defaults to `./prompts/summary_prompt.txt`) | Tailor summary tone |
+| `--article-summary-prompt-file` | Path |  | Custom prompt for article mode when `--azure-summary` is enabled (defaults to `./prompts/article_prompt.txt`) | Tune article summarization |
+| `--max-speakers` | Integer |  | Upper bound for Azure diarization speaker count | Interview/meeting constraints |
+| `--known-speaker` | `name=path.wav`, repeatable |  | Provide reference audio clips to improve speaker labeling | Identify recurring hosts |
+| `--known-speaker-name` | String, repeatable |  | Supply speaker names without audio samples | Give Azure semantic hints |
+| `--clean-cache` | Flag |  | Remove cached artifacts for the current URL before processing | Force re-download/re-transcribe |
 
-> **提示**：网页文章模式会忽略 `--summary-prompt-file` 与 `--force-azure-diarization`，始终使用文章专用 Prompt；Apple Podcasts 等音频源即使未显式添加 `--force-azure-diarization` 也会自动进入 Azure 流程。
+> **Notes:** Article mode ignores `--summary-prompt-file` and `--force-azure-diarization` to ensure web pages always use the article-specific prompt. Conversely, Apple Podcasts and similar audio sources automatically fall back to the Azure pipeline even without `--force-azure-diarization`.
 
-## 环境变量与配置
+## Environment Variables & Config
 
-| 变量 | 默认值 / 来源 | 说明 |
+| Variable | Default / Source | Purpose |
 | --- | --- | --- |
-| `ANY2SUMMARY_DOTENV` | 工作目录下 `.env` | 启动时自动加载的 `.env` 路径，兼容旧的 `PODCAST_TRANSFORMER_DOTENV` |
-| `ANY2SUMMARY_CACHE_DIR` | `~/.cache/any2summary` | 自定义缓存目录；子目录会按域名或视频 ID 分类 |
-| `ANY2SUMMARY_OUTBOX_DIR` | `~/Library/.../Obsidian Vault/010 outbox` | 摘要 Markdown 的额外副本输出目录，可指向任意笔记库 |
-| `ANY2SUMMARY_YTDLP_UA` | 桌面版 Chrome UA | `yt_dlp` 下载时使用的 User-Agent；Android 回退会自动切换 |
-| `ANY2SUMMARY_YTDLP_COOKIES` | 空 | 指向 cookies.txt，可提升需要登录的视频成功率 |
-| `ANY2SUMMARY_DEBUG_PAYLOAD` | 空 | 设为非空后会在缓存目录生成 `debug_payload_*.json`，便于分析 Azure 原始响应 |
-| `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_ENDPOINT` | 无 | Azure OpenAI 凭据，调用转写、摘要、领域检测必需 |
-| `AZURE_OPENAI_API_VERSION` | `2025-03-01-preview` | Azure Diarization API 版本 |
-| `AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT` | `gpt-4o-transcribe-diarize` | 语音转写/说话人分离部署名 |
-| `AZURE_OPENAI_SUMMARY_DEPLOYMENT` | `llab-gpt-5-pro` | 摘要模型部署名，可与 Responses API 搭配 |
-| `AZURE_OPENAI_DOMAIN_DEPLOYMENT` | 同 `AZURE_OPENAI_SUMMARY_DEPLOYMENT` | 基于摘要反推领域标签时使用 |
-| `AZURE_OPENAI_SUMMARY_API_VERSION` | `2025-01-01-preview` | 摘要（Chat Completions）API 版本 |
-| `AZURE_OPENAI_USE_RESPONSES` | 取决于部署后缀 | 为 `1/true` 或部署名以 `-pro` 结尾时，摘要与领域检测改走 Responses API |
-| `AZURE_OPENAI_RESPONSES_BASE_URL` | 由 `AZURE_OPENAI_ENDPOINT` 推导 | 自定义 Responses API Base URL，可用于多资源场景 |
-| `AZURE_OPENAI_CHUNKING_STRATEGY` | `auto` | 传给 Azure 转写的 chunking 策略字符串/JSON |
-| `ANY2SUMMARY_OUTBOX_DIR` | 见上 | 控制摘要副本复制路径；若为空则跳过复制 |
-| 代理变量 | 由 `setup_and_run.sh` 统一导出 | `https_proxy=http://127.0.0.1:7890` 等，可根据实际情况修改脚本 |
+| `ANY2SUMMARY_DOTENV` | `.env` in working dir | Auto-loaded `.env`; also honors `PODCAST_TRANSFORMER_DOTENV` |
+| `ANY2SUMMARY_CACHE_DIR` | `~/.cache/any2summary` | Override cache location (subdirectories keyed by host/video ID) |
+| `ANY2SUMMARY_OUTBOX_DIR` | `~/Library/.../Obsidian Vault/010 outbox` | Destination for Markdown copies; set to disable or redirect |
+| `ANY2SUMMARY_YTDLP_UA` | Desktop Chrome UA | Custom UA for `yt_dlp`; Android fallback overrides when needed |
+| `ANY2SUMMARY_YTDLP_COOKIES` | Empty | Path to `cookies.txt` for login-only content |
+| `ANY2SUMMARY_DEBUG_PAYLOAD` | Empty | If set, save `debug_payload_*.json` in cache directories |
+| `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_ENDPOINT` | None | Required for all Azure features |
+| `AZURE_OPENAI_API_VERSION` | `2025-03-01-preview` | Azure diarization API version |
+| `AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT` | `gpt-4o-transcribe-diarize` | Transcription/dearization deployment name |
+| `AZURE_OPENAI_SUMMARY_DEPLOYMENT` | `llab-gpt-5-pro` | Summary model deployment |
+| `AZURE_OPENAI_DOMAIN_DEPLOYMENT` | Uses summary deployment | Infers domain tags from summaries |
+| `AZURE_OPENAI_SUMMARY_API_VERSION` | `2025-01-01-preview` | API version for Chat Completions mode |
+| `AZURE_OPENAI_USE_RESPONSES` | Based on deployment suffix | Opt into Responses API (`1/true/yes` or `*-pro`) |
+| `AZURE_OPENAI_RESPONSES_BASE_URL` | Derived from endpoint | Override Responses API base URL |
+| `AZURE_OPENAI_CHUNKING_STRATEGY` | `auto` | Strategy string/JSON sent to Azure transcription |
+| Proxy vars | Exported in `setup_and_run.sh` | Defaults to localhost:7890 for http/https/all_proxy |
 
-## 典型工作流
+## Typical Workflows
 
-### 1. 只需字幕/时间轴（无 Azure）
+### 1. Captions + timeline only (no Azure)
 ```bash
 python -m any2summary.cli --url "https://youtu.be/<id>" --language zh
 ```
-输出包含 `segments`（时间戳+文本）以及基础元数据，适合直接导入二次处理脚本。
+Emits `segments` with timestamps and text—ideal for additional scripting or downstream tooling.
 
-### 2. 说话人分离 + 摘要
+### 2. Speaker diarization + summary
 ```bash
 ANY2SUMMARY_DOTENV=./.env \
 python -m any2summary.cli \
@@ -107,10 +108,10 @@ python -m any2summary.cli \
   --summary-prompt-file ./prompts/summary_prompt.txt \
   --known-speaker "Host=./samples/host.wav"
 ```
-- 音频会缓存到 `~/.cache/any2summary/youtube/<video-id>/` 并切分上传。
-- CLI 输出 JSON 将包含 `summary`（Markdown 路径）、`timeline` 等字段，并将 Markdown 复制到 `ANY2SUMMARY_OUTBOX_DIR`。
+- Audio is cached under `~/.cache/any2summary/youtube/<video-id>/` and split when needed.
+- JSON output includes inline `summary`/`timeline` plus `summary_path` pointing to Markdown files; a copy is placed under `ANY2SUMMARY_OUTBOX_DIR`.
 
-### 3. 网页文章模式
+### 3. Article mode
 ```bash
 python -m any2summary.cli \
   --url "https://example.com/blog/post" \
@@ -118,41 +119,41 @@ python -m any2summary.cli \
   --azure-summary \
   --article-summary-prompt-file ./prompts/article_prompt.txt
 ```
-- `fetch_article_assets` 会保存 `article_raw.html`、`article_content.txt`、`article_metadata.json`。
-- 摘要始终使用文章 Prompt，忽略 `--summary-prompt-file` 与 `--force-azure-diarization`。
+- `fetch_article_assets` stores `article_raw.html`, `article_content.txt`, and `article_metadata.json`.
+- The workflow always applies the article-specific prompt and ignores `--summary-prompt-file` / `--force-azure-diarization`.
 
-### 4. 并发处理多个链接
+### 4. Multiple URLs in parallel
 ```bash
 python -m any2summary.cli \
   --url "https://youtu.be/A1,https://podcasts.apple.com/episode/B2" \
   --azure-summary
 ```
-- CLI 会按输入顺序输出两条 JSON；若其中某条失败，会在标准错误输出 `[URL] 错误信息`，其余任务继续完成。
+- Each job prints a JSON block in the original order; failures are reported to stderr as `[URL] error message` without stopping remaining tasks.
 
-## 缓存与文件结构
-- 默认缓存位于 `~/.cache/any2summary/<host_or_id>/`：
-  - `audio.*`：原始下载音频，拼接音频则以 `audio_partXXX.wav` 命名
-  - `captions.json`：字幕片段
-  - `segments.json`：Azure 转写合并结果
-  - `summary.md`、`timeline.md`：摘要/时间轴 Markdown
-  - `article_raw.html`/`article_content.txt`/`article_metadata.json`：文章模式产物
-- `--clean-cache` 会在新任务开始前删除对应目录。
-- 可通过设置 `ANY2SUMMARY_CACHE_DIR` 将缓存迁移至外置磁盘或共享目录。
+## Cache Layout
+- Default cache root: `~/.cache/any2summary/<host_or_id>/`, containing:
+  - `audio.*`: downloaded audio (split files named `audio_partXXX.wav`)
+  - `captions.json`: caption segments
+  - `segments.json`: merged Azure transcripts
+  - `summary.md`, `timeline.md`: Markdown exports
+  - `article_raw.html` / `article_content.txt` / `article_metadata.json`: article mode artifacts
+- `--clean-cache` wipes the directory before processing.
+- Set `ANY2SUMMARY_CACHE_DIR` to relocate caches to another drive or shared path.
 
-## 深度定制与调试
-- **Prompt 定制**：为不同来源维护独立 Prompt 文件，通过 `--summary-prompt-file` / `--article-summary-prompt-file` 切换。
-- **默认 Prompt 管理**：直接编辑仓库 `prompts/summary_prompt.txt` 与 `prompts/article_prompt.txt` 即可修改 CLI 默认摘要风格，每次执行都会重新读取文件内容。
-- **说话人优化**：利用 `--known-speaker` (name=wav) 或 `--known-speaker-name` 提供语义/音频提示提升 Azure 标签准确率。
-- **Azure Streaming**：默认开启，若在 CI 环境不希望显示进度条，可添加 `--no-azure-streaming`。
-- **Android 回退**：当 `yt_dlp` 遇到 403 时会自动切换至 Android UA；如站点需要 cookie，请设置 `ANY2SUMMARY_YTDLP_COOKIES`。
-- **调试 payload**：把 `ANY2SUMMARY_DEBUG_PAYLOAD` 设为 `1` 后，可在缓存目录获取 `debug_payload_*.json` 观察 Azure 原始响应。
-- **多 URL 策略**：内部使用 `ThreadPoolExecutor`，最大并发不超过 CPU 核心数；可通过分批调用控制资源占用。
+## Advanced Customization & Debugging
+- **Prompt overrides:** keep dedicated prompt files per source type and pass them via `--summary-prompt-file` / `--article-summary-prompt-file`.
+- **Default prompt management:** editing `prompts/summary_prompt.txt` or `prompts/article_prompt.txt` immediately updates the CLI’s built-in behavior.
+- **Speaker accuracy:** use `--known-speaker name=sample.wav` or `--known-speaker-name` hints to improve Azure labels.
+- **Azure streaming:** enabled by default; disable with `--no-azure-streaming` in CI or log-sensitive environments.
+- **Android fallback:** `yt_dlp` automatically retries with Android settings on YouTube 403 errors; provide cookies through `ANY2SUMMARY_YTDLP_COOKIES` for gated content.
+- **Payload debugging:** set `ANY2SUMMARY_DEBUG_PAYLOAD=1` to dump raw Azure responses as JSON in the cache folder.
+- **Batch throughput:** a `ThreadPoolExecutor` caps concurrency at CPU count; split large batches manually if you need throttling.
 
-## 脚本与 Docker
+## Scripts & Docker
 
 ### setup_and_run.sh
-- 负责创建 `.venv`、安装依赖并执行 CLI，脚本开头默认导出 `http_proxy/https_proxy/all_proxy` 到 `127.0.0.1:7890`，若端口不同请修改脚本后再运行。
-- 支持 `./setup_and_run.sh --url <...> --azure-summary` 等完整 CLI 参数，适合日常使用或分享给非开发者。
+- Creates `.venv`, installs dependencies, and exports proxy variables (`http_proxy/https_proxy/all_proxy` to `127.0.0.1:7890` by default). Edit the script to match your proxy port.
+- Accepts the full CLI argument list (e.g., `./setup_and_run.sh --url <...> --azure-summary`) and is suitable for teammates who prefer shell scripts over Python invocations.
 
 ### Docker
 ```bash
@@ -164,23 +165,23 @@ docker run --rm \
   --url "https://www.youtube.com/watch?v=<video-id>" \
   --language en
 ```
-- 记得通过 `--env-file` 传入 Azure 凭据，并挂载缓存目录避免重复下载。
+- Pass Azure credentials via `--env-file` and mount the cache directory to avoid repeated downloads/transcriptions.
 
-## 测试
+## Testing
 ```bash
 cd any2summary
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest test/test_cli.py test/test_cli_article.py
 
-# 或在仓库根目录执行：
+# From the repo root:
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest any2summary/test/
-pytest test/ -q  # 回归与集成用例
+pytest test/ -q  # regression + integration suites
 ```
 
-## 常见问题
-- **403 Forbidden / 无法下载音频**：确认 URL 可直接访问；若需登录，请提供 cookies (`ANY2SUMMARY_YTDLP_COOKIES`) 或使用 `setup_and_run.sh` 默认代理。
-- **Azure 凭据错误**：确保 `.env` 或环境变量中包含 `AZURE_OPENAI_API_KEY`、`AZURE_OPENAI_ENDPOINT`，并在需要摘要时配置对应部署名。
-- **音频过长**：工具会自动切分并重试；若缓存中存在旧的超长 WAV，可先执行 `--clean-cache`。
-- **文章模式摘要为空**：请确认 `--azure-summary` 已启用且文章可正常访问；必要时提供自定义 `--article-summary-prompt-file`。
-- **本地磁盘占用高**：定期清理 `ANY2SUMMARY_CACHE_DIR`，或结合 `--clean-cache` 针对性删除历史任务。
+## FAQ
+- **403 Forbidden / audio download fails**: verify the URL is publicly accessible; for login-required content, provide cookies via `ANY2SUMMARY_YTDLP_COOKIES` or rely on the default proxy in `setup_and_run.sh`.
+- **Azure credential errors**: ensure `.env` or environment vars define `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT`, and set deployment names when summaries are required.
+- **Audio too long**: the CLI auto-splits WAV files and retries; if stale oversized files linger, run with `--clean-cache` first.
+- **Empty article summaries**: confirm `--azure-summary` is enabled and the article is reachable; provide a custom `--article-summary-prompt-file` if necessary.
+- **Disk usage**: periodically clean `ANY2SUMMARY_CACHE_DIR` or combine it with `--clean-cache` on old tasks.
 
-发布前请再次确认 README、测试命令与 Prompt 文件说明是否与当前 CLI 行为保持一致，避免用户在实际运行时遇到参数不匹配的问题。
+Before publishing, verify that README updates, sample commands, and prompt descriptions align with the current CLI behavior to avoid mismatches for new users.
