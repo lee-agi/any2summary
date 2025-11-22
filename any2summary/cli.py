@@ -979,8 +979,7 @@ def perform_azure_diarization(
                     "file": audio_file,
                     "response_format": "diarized_json",
                     "language": language,
-                    "chunking_strategy": dict(chunking_strategy_config),
-                    "extra_body": dict(request_extra_body),
+                    "chunking_strategy": "auto" 
                 }
                 if request_known_names:
                     request_kwargs["known_speaker_names"] = request_known_names

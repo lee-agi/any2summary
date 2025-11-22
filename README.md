@@ -50,6 +50,8 @@ pip install "httpx[socks]"
 
 或者执行项目提供的 `setup_and_run.sh` 脚本，它会自动创建虚拟环境并安装必要依赖。
 
+脚本开头会直接执行 `export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890 all_proxy=socks5://127.0.0.1:7890`，确保 `pip` 与 `yt_dlp` 默认走本地 7890 端口代理；如需自定义端口，请自行修改 `setup_and_run.sh` 中的导出语句。
+
 同时需要本地安装 `ffmpeg`，macOS 可通过 `brew install ffmpeg`，其他平台请参考官方安装说明。
 
 ## Azure 配置

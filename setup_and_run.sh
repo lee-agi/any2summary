@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# 默认启用本地 7890 端口代理，可按需修改。
+export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890 all_proxy=socks5://127.0.0.1:7890
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${SCRIPT_DIR}"
 VENV_DIR="${PROJECT_ROOT}/.venv"
