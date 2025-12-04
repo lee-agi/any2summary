@@ -16,6 +16,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -44,6 +45,11 @@ from typing import (
 )
 from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
 
+try:  # pragma: no cover - optional dependency already required by openai
+    from httpx import RemoteProtocolError
+except Exception:  # pragma: no cover - fallback when httpx missing
+    RemoteProtocolError = None  # type: ignore[assignment]
+
 
 DEFAULT_YTDLP_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -64,6 +70,7 @@ WAV_FRAME_CHUNK_SIZE = 32_768
 ESTIMATED_TOKENS_PER_SECOND = 4.0
 PROGRESS_BAR_WIDTH = 30
 READING_WORDS_PER_MINUTE = 300
+MAX_SINGLE_RUN_ATTEMPTS = 2
 DEFAULT_OUTBOX_DIR = (
     "/Users/clzhang/Library/Mobile Documents/"
     "iCloud~md~obsidian/Documents/Obsidian Vault/010 outbox"
@@ -71,6 +78,9 @@ DEFAULT_OUTBOX_DIR = (
 PROMPTS_ROOT = Path(__file__).resolve().parents[1] / "prompts"
 DEFAULT_SUMMARY_PROMPT_PATH = PROMPTS_ROOT / "summary_prompt.txt"
 DEFAULT_ARTICLE_PROMPT_PATH = PROMPTS_ROOT / "article_prompt.txt"
+
+
+_LOGGER = logging.getLogger(__name__)
 
 def _getenv(*keys: str) -> Optional[str]:
     """Return the first defined environment variable among keys."""
@@ -380,7 +390,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
 
     if len(raw_urls) == 1:
         args.url = raw_urls[0]
-        return _run_single(args)
+        return _run_single_with_retry(args)
 
     return _run_multiple(args, raw_urls)
 
@@ -425,20 +435,88 @@ def _run_multiple(args: argparse.Namespace, urls: Sequence[str]) -> int:
 
 def _run_single_with_capture(args: argparse.Namespace) -> Tuple[int, str, Optional[str]]:
     buffer = io.StringIO()
-    error_message: Optional[str] = None
-    try:
-        with contextlib.redirect_stdout(buffer):
-            exit_code = _run_single(args)
-    except Exception as exc:  # pragma: no cover - error path
-        exit_code = 1
-        error_message = str(exc)
-    return exit_code, buffer.getvalue(), error_message
+    attempt = 0
+    last_error: Optional[str] = None
+
+    while attempt < MAX_SINGLE_RUN_ATTEMPTS:
+        attempt += 1
+        buffer.seek(0)
+        buffer.truncate(0)
+        try:
+            with contextlib.redirect_stdout(buffer):
+                exit_code = _run_single(args)
+        except Exception as exc:  # pragma: no cover - error path
+            last_error = str(exc)
+            if attempt >= MAX_SINGLE_RUN_ATTEMPTS:
+                return 1, buffer.getvalue(), last_error
+            _LOGGER.warning(
+                "Run attempt %d/%d for %s failed with error: %s",
+                attempt,
+                MAX_SINGLE_RUN_ATTEMPTS,
+                getattr(args, "url", "<unknown>"),
+                exc,
+            )
+            last_error = None
+            continue
+
+        if exit_code == 0:
+            return 0, buffer.getvalue(), None
+
+        last_error = f"Exit code {exit_code} after {attempt} attempts"
+        if attempt >= MAX_SINGLE_RUN_ATTEMPTS:
+            return exit_code, buffer.getvalue(), last_error
+        _LOGGER.warning(
+            "Run attempt %d/%d for %s exited with %s; retrying once.",
+            attempt,
+            MAX_SINGLE_RUN_ATTEMPTS,
+            getattr(args, "url", "<unknown>"),
+            exit_code,
+        )
+
+    return 1, buffer.getvalue(), last_error
 
 
 def _clone_args(args: argparse.Namespace, url: str) -> argparse.Namespace:
     cloned = copy.deepcopy(args)
     cloned.url = url
     return cloned
+
+
+def _run_single_with_retry(args: argparse.Namespace) -> int:
+    """Execute _run_single with a single automatic retry on failure."""
+
+    attempt = 0
+    last_exit_code = 1
+    while attempt < MAX_SINGLE_RUN_ATTEMPTS:
+        attempt += 1
+        try:
+            exit_code = _run_single(args)
+        except Exception as exc:
+            if attempt >= MAX_SINGLE_RUN_ATTEMPTS:
+                raise
+            _LOGGER.warning(
+                "Run attempt %d/%d for %s failed with error: %s",
+                attempt,
+                MAX_SINGLE_RUN_ATTEMPTS,
+                getattr(args, "url", "<unknown>"),
+                exc,
+            )
+            continue
+
+        last_exit_code = exit_code
+        if exit_code == 0:
+            return 0
+        if attempt >= MAX_SINGLE_RUN_ATTEMPTS:
+            return exit_code
+        _LOGGER.warning(
+            "Run attempt %d/%d for %s exited with %s; retrying once.",
+            attempt,
+            MAX_SINGLE_RUN_ATTEMPTS,
+            getattr(args, "url", "<unknown>"),
+            exit_code,
+        )
+
+    return last_exit_code
 
 
 def _run_single(args: argparse.Namespace) -> int:
@@ -3108,6 +3186,12 @@ def _max_segment_end(
     return max_end
 
 
+def _is_stream_transport_error(exc: BaseException) -> bool:
+    if RemoteProtocolError is not None and isinstance(exc, RemoteProtocolError):
+        return True
+    return isinstance(exc, ConnectionError)
+
+
 def _consume_transcription_response(
     response: Any,
     on_chunk: Optional[Callable[[MutableMapping[str, Any]], None]] = None,
@@ -3133,14 +3217,31 @@ def _consume_transcription_response(
 
     if isinstance(response, Iterable) and not isinstance(response, (str, bytes)):
         final_payload: MutableMapping[str, Any] = {}
-        for item in response:
-            payload = _coerce_response_to_dict(item)
-            if not payload:
-                continue
-            final_payload = payload
-            _record(payload)
+        stream_error: Optional[BaseException] = None
+
+        try:
+            for item in response:
+                payload = _coerce_response_to_dict(item)
+                if not payload:
+                    continue
+                final_payload = payload
+                _record(payload)
+        except BaseException as exc:  # pragma: no cover - exercised via tests
+            if _is_stream_transport_error(exc) and collected:
+                stream_error = exc
+            else:
+                raise
+
+        if stream_error is not None:
+            _LOGGER.warning(
+                "Azure streaming response interrupted after %d chunks: %s",
+                len(collected),
+                stream_error,
+            )
 
         if not collected:
+            if stream_error is not None:
+                raise stream_error
             return final_payload
 
         result = dict(final_payload) if final_payload else {}

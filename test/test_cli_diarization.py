@@ -9,6 +9,7 @@ import wave
 from pathlib import Path
 
 import pytest
+from httpx import RemoteProtocolError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -28,6 +29,29 @@ def test_consume_transcription_response_collects_stream_data() -> None:
 
     assert "data" in result
     assert result["data"] == chunks
+
+
+def test_consume_transcription_response_handles_remote_protocol_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """流式响应中途断开时也应返回已收集的数据。"""
+
+    chunks = [
+        {"type": "transcript.segment", "segments": [{"start": 0, "end": 1}]},
+        {"type": "transcript.text.done", "text": "Partial"},
+    ]
+
+    def _broken_stream():
+        for chunk in chunks:
+            yield chunk
+        raise RemoteProtocolError("peer closed connection without sending complete message body")
+
+    caplog.set_level("WARNING")
+
+    result = cli._consume_transcription_response(_broken_stream())
+
+    assert result["data"] == chunks
+    assert "RemoteProtocolError" in caplog.text or "流式响应中断" in caplog.text
 
 
 def _write_silent_wav(path: Path, duration_seconds: float, sample_rate: int = 8000) -> None:

@@ -152,6 +152,8 @@ python -m any2summary.cli \
 - **默认 Prompt 管理**：直接编辑仓库 `prompts/summary_prompt.txt` 与 `prompts/article_prompt.txt` 即可修改 CLI 默认摘要风格，每次执行都会重新读取文件内容。
 - **说话人优化**：利用 `--known-speaker` (name=wav) 或 `--known-speaker-name` 提供语义/音频提示提升 Azure 标签准确率。
 - **Azure Streaming**：默认开启，若在 CI 环境不希望显示进度条，可添加 `--no-azure-streaming`。
+- **流式容错**：`_consume_transcription_response` 会在 Azure 连接提前关闭（如 `RemoteProtocolError`）时记录 WARNING 并保留已获取的 chunk，确保说话人分离可以继续。
+- **任务重试**：`_run_single_with_retry` 会在首次执行返回非 0 时自动重跑一次，批量模式 `_run_multiple` 也会同步重试，缓解瞬时的网络/接口抖动。
 - **Android 回退**：当 `yt_dlp` 遇到 403 时会自动切换至 Android UA；如站点需要 cookie，请设置 `ANY2SUMMARY_YTDLP_COOKIES`。
 - **调试 payload**：把 `ANY2SUMMARY_DEBUG_PAYLOAD` 设为 `1` 后，可在缓存目录获取 `debug_payload_*.json` 观察 Azure 原始响应。
 - **多 URL 策略**：内部使用 `ThreadPoolExecutor`，最大并发不超过 CPU 核心数；可通过分批调用控制资源占用。

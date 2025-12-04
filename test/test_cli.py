@@ -120,6 +120,55 @@ def test_cli_fallbacks_to_azure_transcription(monkeypatch, capsys):
     assert payload[1]["speaker"] == "Speaker B"
 
 
+def test_run_retries_single_url_success(monkeypatch, capsys):
+    """_run_single 返回非 0 时应自动重试一次。"""
+
+    attempts = {"count": 0}
+
+    def fake_run_single(args):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return 1
+        print("[]")
+        return 0
+
+    monkeypatch.setattr(cli, "_run_single", fake_run_single)
+
+    exit_code = cli.run([
+        "--url",
+        "https://youtu.be/retry",
+        "--language",
+        "en",
+    ])
+
+    assert exit_code == 0
+    assert attempts["count"] == 2
+    assert capsys.readouterr().out.strip() == "[]"
+
+
+def test_run_retries_single_url_failure(monkeypatch, capsys):
+    """连续失败两次应返回非 0 且仅重试一次。"""
+
+    attempts = {"count": 0}
+
+    def fake_run_single(args):
+        attempts["count"] += 1
+        return 1
+
+    monkeypatch.setattr(cli, "_run_single", fake_run_single)
+
+    exit_code = cli.run([
+        "--url",
+        "https://youtu.be/retry",
+        "--language",
+        "en",
+    ])
+
+    assert exit_code == 1
+    assert attempts["count"] == 2
+    assert capsys.readouterr().out == ""
+
+
 def test_cli_skips_azure_when_captions_available(monkeypatch, capsys):
     """有字幕时应短路 Azure 调用以避免下载音频。"""
 
@@ -190,6 +239,71 @@ def test_cli_force_azure_diarization_invokes_azure(monkeypatch, capsys):
     assert azure_called["value"] is True
     payload = json.loads(capsys.readouterr().out)
     assert payload[0]["speaker"] == "Speaker A"
+
+
+def test_run_multiple_retries_each_url(monkeypatch, capsys):
+    """_run_multiple 中的每个 URL 都应支持一次重试。"""
+
+    attempts: dict[str, int] = {}
+
+    def fake_run_single(args):
+        attempts[args.url] = attempts.get(args.url, 0) + 1
+        count = attempts[args.url]
+        if count == 1:
+            return 1
+        print(json.dumps({"url": args.url, "attempt": count}))
+        return 0
+
+    monkeypatch.setattr(cli, "_run_single", fake_run_single)
+
+    exit_code = cli.run([
+        "--url",
+        "https://youtu.be/a,https://youtu.be/b",
+        "--language",
+        "en",
+    ])
+
+    assert exit_code == 0
+    assert attempts == {
+        "https://youtu.be/a": 2,
+        "https://youtu.be/b": 2,
+    }
+
+    output_lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    assert len(output_lines) == 2
+    for line in output_lines:
+        data = json.loads(line)
+        assert data["attempt"] == 2
+
+
+def test_run_multiple_reports_failure_after_retries(monkeypatch, capsys):
+    """多链接模式下若两次都失败，应输出错误并返回 1。"""
+
+    attempts: dict[str, int] = {}
+
+    def fake_run_single(args):
+        attempts[args.url] = attempts.get(args.url, 0) + 1
+        if args.url.endswith("ok") and attempts[args.url] == 2:
+            print("{}")
+            return 0
+        return 1
+
+    monkeypatch.setattr(cli, "_run_single", fake_run_single)
+
+    exit_code = cli.run([
+        "--url",
+        "https://youtu.be/fail,https://youtu.be/ok",
+        "--language",
+        "en",
+    ])
+
+    assert exit_code == 1
+    assert attempts["https://youtu.be/fail"] == 2
+    assert attempts["https://youtu.be/ok"] == 2
+
+    captured = capsys.readouterr()
+    stderr_lines = [line for line in captured.err.splitlines() if line]
+    assert any("https://youtu.be/fail" in line for line in stderr_lines)
 
 
 def test_prepare_audio_uses_cache(monkeypatch, tmp_path):

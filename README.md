@@ -151,6 +151,8 @@ python -m any2summary.cli \
 - **Default prompt management:** editing `prompts/summary_prompt.txt` or `prompts/article_prompt.txt` immediately updates the CLI’s built-in behavior.
 - **Speaker accuracy:** use `--known-speaker name=sample.wav` or `--known-speaker-name` hints to improve Azure labels.
 - **Azure streaming:** enabled by default; disable with `--no-azure-streaming` in CI or log-sensitive environments.
+- **Streaming resiliency:** `_consume_transcription_response` now logs a warning and preserves collected chunks when Azure closes the HTTP stream early (e.g., `RemoteProtocolError`) so diarization can still finish.
+- **Retry safety:** `_run_single_with_retry` reruns each URL once when the first attempt returns a non-zero exit code, and `_run_multiple` mirrors the behavior for batch jobs to smooth over transient network errors.
 - **Android fallback:** `yt_dlp` automatically retries with Android settings on YouTube 403 errors; provide cookies through `ANY2SUMMARY_YTDLP_COOKIES` for gated content.
 - **Payload debugging:** set `ANY2SUMMARY_DEBUG_PAYLOAD=1` to dump raw Azure responses as JSON in the cache folder.
 - **Batch throughput:** a `ThreadPoolExecutor` caps concurrency at CPU count; split large batches manually if you need throttling.
