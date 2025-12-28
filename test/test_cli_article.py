@@ -87,6 +87,15 @@ def _article_html_fixture() -> str:
         "      <h1>Effective Context Engineering for AI Agents</h1>\n"
         "      <p>First paragraph introducing the key concepts.</p>\n"
         "      <p>Second paragraph with more details.</p>\n"
+        "      <img src=\"/static/hero.png\" alt=\"Hero image\">\n"
+        "      <figure>\n"
+        "        <img src=\"https://cdn.example.com/assets/chart.jpg\" alt=\"Chart\">\n"
+        "      </figure>\n"
+        "      <table id=\"summary\">\n"
+        "        <caption>Summary Table</caption>\n"
+        "        <tr><th>Item</th><th>Value</th></tr>\n"
+        "        <tr><td>A</td><td>1</td></tr>\n"
+        "      </table>\n"
         "    </main>\n"
         "  </body>\n"
         "</html>\n"
@@ -137,6 +146,14 @@ def test_fetch_article_assets_writes_cache(
     assert "First paragraph" in content_text
     assert "Second paragraph" in content_text
 
+    assert bundle["image_urls"] == [
+        "https://www.example.com/static/hero.png",
+        "https://cdn.example.com/assets/chart.jpg",
+    ]
+    assert bundle["table_urls"] == ["https://www.example.com/posts/demo#summary"]
+    assert bundle["metadata"]["image_urls"] == bundle["image_urls"]
+    assert bundle["metadata"]["table_urls"] == bundle["table_urls"]
+
     segments = bundle["segments"]
     assert len(segments) == 2
     assert segments[0]["text"].startswith("First paragraph")
@@ -174,6 +191,8 @@ def test_cli_processes_article_summary(
         "content_path": str(tmp_path / "article.txt"),
         "metadata_path": str(tmp_path / "article.json"),
         "icon_path": str(tmp_path / "icon.png"),
+        "image_urls": ["https://www.example.com/static/hero.png"],
+        "table_urls": ["https://www.example.com/posts/demo#summary"],
     }
 
     (tmp_path / "article.html").write_text("raw", encoding="utf-8")

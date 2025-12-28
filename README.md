@@ -15,7 +15,7 @@
 - Azure diarization results align with existing captions; when Azure returns empty segments the CLI falls back to the downloaded subtitles to keep the pipeline moving.
 - Audio-only links or captionless videos automatically trigger the Azure transcription flow; add `--force-azure-diarization` to invoke Azure even when captions exist.
 - `--azure-summary` calls Azure GPT-5 (Responses API or Chat Completions) to generate Markdown summaries and copies them into `ANY2SUMMARY_OUTBOX_DIR` (defaults to an Obsidian outbox folder).
-- Article mode (`fetch_article_assets`) caches `article_raw.html`, `article_content.txt`, and `article_metadata.json`, then applies `ARTICLE_SUMMARY_PROMPT`; `--article-summary-prompt-file` overrides the default.
+- Article mode (`fetch_article_assets`) caches `article_raw.html`, `article_content.txt`, and `article_metadata.json`, then applies `ARTICLE_SUMMARY_PROMPT`; `--article-summary-prompt-file` overrides the default. Image and table links are preserved to help inspect the original page.
 - `--clean-cache` clears cached artifacts for the current URL; `ANY2SUMMARY_DOTENV` automatically loads a `.env` file and remains compatible with legacy `PODCAST_TRANSFORMER_*` variables.
 - CLI output is always indented JSON; in batch mode each job prints a separate JSON document, making it easy to stream-parse.
 

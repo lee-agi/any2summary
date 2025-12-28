@@ -711,6 +711,8 @@ def _run_single(args: argparse.Namespace) -> int:
             "content_path": article_bundle.get("content_path"),
             "metadata_path": article_bundle.get("metadata_path"),
             "icon_path": article_bundle.get("icon_path"),
+            "image_urls": article_bundle.get("image_urls", []),
+            "table_urls": article_bundle.get("table_urls", []),
         }
 
     json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
@@ -2645,6 +2647,8 @@ class _ArticleHTMLParser(HTMLParser):
         self.description: Optional[str] = None
         self.icon_href: Optional[str] = None
         self._ignored_depth = 0
+        self.image_sources: List[str] = []
+        self.table_ids: List[str] = []
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         tag_lower = tag.lower()
@@ -2688,6 +2692,19 @@ class _ArticleHTMLParser(HTMLParser):
                 self.icon_href = href
             return
 
+        if tag_lower == "img":
+            attr_dict = {key.lower(): value for key, value in attrs if value is not None}
+            src = attr_dict.get("src")
+            if src:
+                self.image_sources.append(src)
+            return
+
+        if tag_lower == "table":
+            attr_dict = {key.lower(): value for key, value in attrs if value is not None}
+            table_id = attr_dict.get("id")
+            self.table_ids.append(table_id or "")
+            return
+
     def handle_startendtag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         self.handle_starttag(tag, attrs)
 
@@ -2726,7 +2743,7 @@ class _ArticleHTMLParser(HTMLParser):
             self.current_paragraph_parts.append(data)
 
 
-def _parse_article_html(html_text: str) -> Mapping[str, Any]:
+def _parse_article_html(html_text: str, page_url: Optional[str] = None) -> Mapping[str, Any]:
     parser = _ArticleHTMLParser()
     parser.feed(html_text)
     parser.close()
@@ -2741,11 +2758,26 @@ def _parse_article_html(html_text: str) -> Mapping[str, Any]:
         if normalized:
             paragraphs.append(normalized)
 
+    image_urls: List[str] = []
+    for src in parser.image_sources:
+        resolved = urljoin(page_url, src) if page_url else src
+        if resolved and resolved not in image_urls:
+            image_urls.append(resolved)
+
+    table_urls: List[str] = []
+    for table_id in parser.table_ids:
+        anchor = f"#{table_id}" if table_id else ""
+        resolved = urljoin(page_url, anchor) if page_url else anchor or None
+        if resolved and resolved not in table_urls:
+            table_urls.append(resolved)
+
     return {
         "title": title,
         "description": _normalize_article_text(parser.description or ""),
         "icon_href": parser.icon_href,
         "paragraphs": paragraphs,
+        "image_urls": image_urls,
+        "table_urls": table_urls,
     }
 
 
@@ -2823,7 +2855,7 @@ def fetch_article_assets(video_url: str) -> MutableMapping[str, Any]:
 
         if not html_text or not html_text.strip():
             raise RuntimeError("网页内容为空，无法解析正文。")
-        parsed = _parse_article_html(html_text)
+        parsed = _parse_article_html(html_text, video_url)
         icon_path = _download_article_icon(
             client, parsed.get("icon_href"), video_url, cache_dir
         )
@@ -2852,6 +2884,8 @@ def fetch_article_assets(video_url: str) -> MutableMapping[str, Any]:
         "description": parsed.get("description", ""),
         "webpage_url": video_url,
         "source_type": "article",
+        "image_urls": parsed.get("image_urls", []),
+        "table_urls": parsed.get("table_urls", []),
     }
 
     metadata_path = os.path.join(cache_dir, "article_metadata.json")
@@ -2865,6 +2899,8 @@ def fetch_article_assets(video_url: str) -> MutableMapping[str, Any]:
         "content_path": content_path,
         "metadata_path": metadata_path,
         "icon_path": icon_path,
+        "image_urls": parsed.get("image_urls", []),
+        "table_urls": parsed.get("table_urls", []),
         "cache_dir": cache_dir,
     }
 

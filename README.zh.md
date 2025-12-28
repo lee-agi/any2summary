@@ -15,7 +15,7 @@
 - Azure 说话人分离结果与原字幕自动对齐，若 Azure 返回空结果会回退到已有字幕，避免流程中断。
 - 无字幕或音频专用链接会自动触发 Azure 转写，若想在字幕已存在时也使用 Azure，可显式添加 `--force-azure-diarization`。
 - `--azure-summary` 会调用 Azure GPT-5（Responses API 或 Chat 完成）生成 Markdown 摘要，并另存到 `ANY2SUMMARY_OUTBOX_DIR`（默认指向 Obsidian outbox）。
-- 文章模式（`fetch_article_assets`）会缓存 `article_raw.html`、`article_content.txt`、`article_metadata.json` 并套用 `ARTICLE_SUMMARY_PROMPT`；可用 `--article-summary-prompt-file` 单独调参。
+- 文章模式（`fetch_article_assets`）会缓存 `article_raw.html`、`article_content.txt`、`article_metadata.json` 并套用 `ARTICLE_SUMMARY_PROMPT`；可用 `--article-summary-prompt-file` 单独调参；会保留页面中的图片和表格链接，便于回溯原文。
 - `--clean-cache` 用于排查缓存；`ANY2SUMMARY_DOTENV` 允许自动加载 `.env` 并兼容历史 `PODCAST_TRANSFORMER_*` 变量。
 - CLI 输出默认使用缩进 JSON，批量模式会顺序打印多个完整 JSON 文档，便于直接复制或通过流式解析消费。
 

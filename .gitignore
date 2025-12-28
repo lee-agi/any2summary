@@ -10,3 +10,4 @@ cookies.txt
 .vscode
 .env
 dist/
+.DS_Store
