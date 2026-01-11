@@ -34,6 +34,7 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", "gpt-5-pro")
     monkeypatch.delenv("AZURE_OPENAI_SUMMARY_API_VERSION", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", raising=False)
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(PACKAGE_ROOT / "test-cache"))
 
     segments = [
         {"start": 0.0, "end": 3.2, "speaker": "Speaker 1", "text": "Hello world"}
@@ -91,7 +92,7 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     summary = result["summary_markdown"]
     timeline = result["timeline_markdown"]
 
-    expected_heading = "# 【科技】Demo Title-2024-M01"
+    expected_heading = "# 【Tech】Demo Title-2024-M01"
     assert summary.splitlines()[0] == expected_heading
     assert "翻译摘要" in summary
     assert "标题：Demo Title" in summary
@@ -99,7 +100,7 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     assert timeline.splitlines()[0] == expected_heading
     assert "Demo Title" in timeline
     assert result["metadata"]["publish_date"] == "2024-01-02"
-    assert result["metadata"]["domain"] == "科技"
+    assert result["metadata"]["domain"] == "Tech"
     assert result["total_words"] > 0
     assert result["estimated_minutes"] >= 1
     assert result["file_base"] == "【科技】DemoTitle-2024-M01"
@@ -133,6 +134,7 @@ def test_generate_translation_summary_infers_domain_via_azure(
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
     monkeypatch.setenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", "gpt-5-pro")
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(PACKAGE_ROOT / "test-cache"))
     segments = [
         {"start": 0.0, "end": 1.0, "speaker": "Speaker", "text": "Tech talk"}
     ]
@@ -166,11 +168,35 @@ def test_generate_translation_summary_infers_domain_via_azure(
     user_content = domain_request["input"][1]["content"][0]["text"]
     assert user_content == "摘要内容"
     assert domain_request["input"][0]["content"][0]["text"] == cli.DOMAIN_PROMPT
-    assert "科技" in result["summary_markdown"]
+    assert "Tech" in result["summary_markdown"]
     heading = result["summary_markdown"].splitlines()[0]
-    assert heading.startswith("# 【科技】")
-    assert result["metadata"]["domain"] == "科技"
+    assert heading.startswith("# 【Tech】")
+    assert result["metadata"]["domain"] == "Tech"
     assert "raw_summary" not in domain_request
+
+
+def test_compose_summary_documents_is_bilingual() -> None:
+    """音频/视频模式下 summary 与 timeline 应包含中英文信息。"""
+
+    segments = [
+        {"start": 0.0, "end": 1.0, "speaker": "A", "text": "Hello"},
+        {"start": 1.0, "end": 2.0, "speaker": "B", "text": "World"},
+    ]
+    metadata = {"title": "Demo", "webpage_url": "https://youtu.be/demo"}
+    result = cli._compose_summary_documents(
+        segments, "中文摘要", metadata, "https://youtu.be/demo"
+    )
+
+    summary_text = result["summary_markdown"]
+    timeline_text = result["timeline_markdown"]
+
+    assert "中文摘要" in summary_text
+    assert "Hello" in summary_text
+    assert "World" in summary_text
+
+    assert "中文摘要" in timeline_text
+    assert "Hello" in timeline_text
+    assert "World" in timeline_text
 
 
 def test_generate_translation_summary_supports_legacy_chat(monkeypatch: pytest.MonkeyPatch) -> None:

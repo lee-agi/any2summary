@@ -25,7 +25,7 @@ import subprocess
 import sys
 import tempfile
 import wave
-from datetime import datetime
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from collections import defaultdict
 from importlib import metadata
@@ -46,9 +46,17 @@ from typing import (
 from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
 
 try:  # pragma: no cover - optional dependency already required by openai
-    from httpx import RemoteProtocolError
+    from httpx import RemoteProtocolError, ConnectError
 except Exception:  # pragma: no cover - fallback when httpx missing
     RemoteProtocolError = None  # type: ignore[assignment]
+    ConnectError = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - 可选依赖，覆盖 httpcore 直抛的协议错误
+    from httpcore import RemoteProtocolError as CoreRemoteProtocolError
+    from httpcore import ConnectError as CoreConnectError
+except Exception:  # pragma: no cover - httpcore 未安装时忽略
+    CoreRemoteProtocolError = None  # type: ignore[assignment]
+    CoreConnectError = None  # type: ignore[assignment]
 
 
 DEFAULT_YTDLP_USER_AGENT = (
@@ -542,6 +550,7 @@ def _run_single(args: argparse.Namespace) -> int:
     fallback_languages = args.fallback_languages or [args.language]
     known_speaker_pairs = _parse_known_speakers(args.known_speakers)
     known_speaker_names = args.known_speaker_names or None
+    is_probable_article = _is_probable_article_url(args.url)
 
     transcript_segments: Optional[
         List[MutableMapping[str, float | str]]
@@ -549,16 +558,7 @@ def _run_single(args: argparse.Namespace) -> int:
     transcript_error: Optional[RuntimeError] = None
     article_bundle: Optional[Mapping[str, Any]] = None
 
-    try:
-        transcript_segments = fetch_transcript_with_metadata(
-            video_url=args.url,
-            language=args.language,
-            fallback_languages=fallback_languages,
-        )
-    except RuntimeError as exc:
-        transcript_error = exc
-
-    if transcript_segments is None and _is_probable_article_url(args.url):
+    if is_probable_article:
         article_bundle = _maybe_fetch_article_assets(args.url)
         if article_bundle is not None:
             transcript_segments = [
@@ -566,16 +566,25 @@ def _run_single(args: argparse.Namespace) -> int:
                 for segment in article_bundle.get("segments", [])
                 if isinstance(segment, Mapping)
             ]
-            if transcript_segments:
-                transcript_error = None
-            else:
+            if not transcript_segments:
                 article_bundle = None
+        if transcript_segments is None:
+            transcript_segments = []
+    else:
+        try:
+            transcript_segments = fetch_transcript_with_metadata(
+                video_url=args.url,
+                language=args.language,
+                fallback_languages=fallback_languages,
+            )
+        except RuntimeError as exc:
+            transcript_error = exc
 
     diarization_segments: Optional[List[MutableMapping[str, float | str]]] = None
     azure_payload: Optional[MutableMapping[str, Any]] = None
 
     should_use_azure = False
-    if article_bundle is not None:
+    if article_bundle is not None or is_probable_article:
         should_use_azure = False
     else:
         transcripts_available = bool(transcript_segments)
@@ -628,11 +637,9 @@ def _run_single(args: argparse.Namespace) -> int:
                     raise transcript_error
                 raise RuntimeError("Azure OpenAI 未返回可用的转写结果。")
 
-    if (
-        not transcript_segments
-        and article_bundle is None
-        and _is_probable_article_url(args.url)
-    ):
+    is_probable_article = _is_probable_article_url(args.url)
+
+    if not transcript_segments and article_bundle is None and is_probable_article:
         article_bundle = _maybe_fetch_article_assets(args.url)
         if article_bundle is not None:
             transcript_segments = [
@@ -659,6 +666,7 @@ def _run_single(args: argparse.Namespace) -> int:
     summary_bundle: Optional[MutableMapping[str, Any]] = None
     summary_paths: Optional[Mapping[str, str]] = None
     article_metadata = article_bundle.get("metadata") if article_bundle else None
+    is_article = bool(article_metadata and str(article_metadata.get("source_type")) == "article")
     if args.azure_summary:
         custom_prompt: Optional[str] = None
         if article_bundle is not None:
@@ -678,11 +686,18 @@ def _run_single(args: argparse.Namespace) -> int:
             prompt=custom_prompt,
             metadata=article_metadata,
         )
+        if is_article:
+            summary_bundle["summary_markdown"] = _append_article_assets(
+                summary_bundle.get("summary_markdown", ""), article_metadata
+            )
+        should_write_timeline = not _is_probable_article_url(args.url) and not is_article
+
         summary_paths = _write_summary_documents(
             args.url,
             summary_bundle.get("summary_markdown", ""),
             summary_bundle.get("timeline_markdown", ""),
             summary_bundle.get("file_base", "summary"),
+            write_timeline=should_write_timeline,
         )
 
     payload: Union[List[MutableMapping[str, float | str]], MutableMapping[str, Any]]
@@ -695,7 +710,9 @@ def _run_single(args: argparse.Namespace) -> int:
         }
         if summary_paths is not None:
             payload["summary_path"] = summary_paths.get("summary")
-            payload["timeline_path"] = summary_paths.get("timeline")
+            timeline_path_value = summary_paths.get("timeline")
+            if timeline_path_value is not None:
+                payload["timeline_path"] = timeline_path_value
             payload["summary_paths"] = summary_paths
         if "total_words" in summary_bundle:
             payload["total_words"] = summary_bundle["total_words"]
@@ -989,9 +1006,48 @@ def perform_azure_diarization(
             if stripped not in request_known_names:
                 request_known_names.append(stripped)
 
+    aggregated_diarization: List[MutableMapping[str, float | str]] = []
+    aggregated_transcript: List[MutableMapping[str, float | str]] = []
+    segment_offset = 0.0
+    processed_duration = 0.0
+    produced_tokens = 0.0
+    segments_done = 0
+
+    checkpoint_path = os.path.join(cache_directory, "diarization.partial.json")
+    partial_payload = _load_cached_diarization(checkpoint_path)
+    if partial_payload:
+        diarization_segments = partial_payload.get("speakers")
+        transcript_segments = partial_payload.get("transcript")
+        if isinstance(diarization_segments, list):
+            aggregated_diarization.extend(diarization_segments)
+        if isinstance(transcript_segments, list):
+            aggregated_transcript.extend(transcript_segments)
+        segment_offset = float(partial_payload.get("segment_offset", 0.0) or 0.0)
+        processed_duration = float(partial_payload.get("processed_duration", 0.0) or 0.0)
+        produced_tokens = float(partial_payload.get("produced_tokens", 0.0) or 0.0)
+        segments_done = int(partial_payload.get("segments_done", len(aggregated_transcript)) or 0)
+        segments_done = max(0, min(segments_done, total_segments))
+        if not segment_offset and aggregated_transcript:
+            segment_offset = max(
+                (
+                    float(item.get("end", item.get("start", 0.0)))
+                    for item in aggregated_transcript
+                ),
+                default=0.0,
+            )
+        if processed_duration <= 0.0 and segments_done > 0:
+            processed_duration = sum(segment_durations[:segments_done])
+
     if total_segments > 0:
         _update_progress_bar(
-            0.0,
+            _compute_progress_ratio(
+                processed_duration,
+                total_audio_duration,
+                produced_tokens,
+                total_estimated_tokens,
+                segments_done,
+                total_segments,
+            ),
             _format_progress_detail(
                 processed_duration,
                 total_audio_duration,
@@ -1002,16 +1058,14 @@ def perform_azure_diarization(
             ),
         )
 
-    aggregated_diarization: List[MutableMapping[str, float | str]] = []
-    aggregated_transcript: List[MutableMapping[str, float | str]] = []
-    segment_offset = 0.0
-
     for index, segment_path in enumerate(segment_paths, start=1):
         segment_duration = (
             segment_durations[index - 1]
             if 0 <= index - 1 < len(segment_durations)
             else 0.0
         )
+        if segments_done >= index:
+            continue
         stream_tokens = 0.0
 
         try:
@@ -1065,6 +1119,18 @@ def perform_azure_diarization(
                     "Azure OpenAI 调用失败："
                     f"{message}。请尝试使用 --clean-cache 重新生成音频，并确认 ffmpeg 可用。"
                 ) from exc
+            if _is_stream_transport_error(exc):
+                _write_diarization_cache(
+                    checkpoint_path,
+                    {
+                        "speakers": aggregated_diarization,
+                        "transcript": aggregated_transcript,
+                        "segment_offset": segment_offset,
+                        "processed_duration": processed_duration,
+                        "produced_tokens": produced_tokens,
+                        "segments_done": segments_done,
+                    },
+                )
             raise
 
         response_payload = _consume_transcription_response(
@@ -1143,6 +1209,18 @@ def perform_azure_diarization(
 
         aggregated_diarization.extend(diarization_with_offset)
         aggregated_transcript.extend(transcript_with_offset)
+
+        _write_diarization_cache(
+            checkpoint_path,
+            {
+                "speakers": aggregated_diarization,
+                "transcript": aggregated_transcript,
+                "segment_offset": segment_offset,
+                "processed_duration": processed_duration,
+                "produced_tokens": produced_tokens,
+                "segments_done": segments_done,
+            },
+        )
 
         max_end = _max_segment_end(diarization_with_offset, transcript_with_offset)
         if segment_duration <= 0.0:
@@ -1251,6 +1329,11 @@ def perform_azure_diarization(
         "transcript": transcript_segments,
     }
     _write_diarization_cache(cache_path, result_payload)
+    if os.path.exists(checkpoint_path):
+        try:
+            os.remove(checkpoint_path)
+        except OSError:
+            pass
 
     return result_payload
 
@@ -1908,9 +1991,13 @@ def generate_translation_summary(
     timeline = _format_segments_for_summary(segments)
     user_message = "原始 ASR 片段如下：\n" + timeline
 
-    use_responses = deployment.endswith("-pro") or str(
-        os.getenv("AZURE_OPENAI_USE_RESPONSES", "")
-    ).lower() in {"1", "true", "yes"}
+    use_responses = False
+    if deployment:
+        use_responses = bool(
+            deployment.endswith("-pro")
+            or str(os.getenv("AZURE_OPENAI_USE_RESPONSES", "")).lower()
+            in {"1", "true", "yes"}
+        )
 
     if use_responses:
         base_url = os.getenv("AZURE_OPENAI_RESPONSES_BASE_URL")
@@ -2040,9 +2127,13 @@ def _infer_domain_from_summary(raw_summary: str) -> Optional[str]:
         or os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT")
     )
 
-    use_responses = deployment.endswith("-pro") or str(
-        os.getenv("AZURE_OPENAI_USE_RESPONSES", "")
-    ).lower() in {"1", "true", "yes"}
+    use_responses = False
+    if deployment:
+        use_responses = deployment.endswith("-pro") or str(
+            os.getenv("AZURE_OPENAI_USE_RESPONSES", "")
+        ).lower() in {"1", "true", "yes"}
+    else:
+        return None
 
     try:
         if use_responses:
@@ -2098,6 +2189,51 @@ def _infer_domain_from_summary(raw_summary: str) -> Optional[str]:
     return candidate
 
 
+def _normalize_domain_label(domain: str) -> str:
+    """Normalize domain tag to preferred English labels."""
+
+    text = str(domain or "").strip()
+    if not text:
+        return "General"
+
+    normalized = text.lower()
+    mapping = {
+        "科技": "Tech",
+        "技术": "Tech",
+        "science": "Science",
+        "科学": "Science",
+        "ai": "AI",
+        "人工智能": "AI",
+        "大模型": "LLM",
+        "llm": "LLM",
+        "智能体": "Agent",
+        "agent": "Agent",
+        "商业": "Business",
+        "商务": "Business",
+        "财经": "Finance",
+        "金融": "Finance",
+        "教育": "Education",
+        "学习": "Education",
+        "娱乐": "Entertainment",
+        "生活": "Lifestyle",
+        "体育": "Sports",
+        "医疗": "Medical",
+        "医学": "Medical",
+        "健康": "Health",
+        "法律": "Legal",
+        "产品": "Product",
+    }
+
+    if normalized in mapping:
+        return mapping[normalized]
+
+    # Preserve already English-looking labels.
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_\- ]*", text):
+        return text.strip()
+
+    return "General"
+
+
 def _compose_summary_documents(
     segments: Sequence[MutableMapping[str, Any]],
     raw_summary: str,
@@ -2107,12 +2243,15 @@ def _compose_summary_documents(
     if not raw_summary or not raw_summary.strip():
         raise RuntimeError("Azure GPT-5 摘要结果为空。")
 
+    source_type = str(video_metadata.get("source_type", "")).lower()
+    is_article = source_type == "article"
+
     sorted_segments = sorted(
         (dict(segment) for segment in segments),
         key=lambda item: float(item.get("start", 0.0)),
     )
 
-    generated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     if sorted_segments:
         starts = [float(item.get("start", 0.0)) for item in sorted_segments]
         ends = [float(item.get("end", item.get("start", 0.0))) for item in sorted_segments]
@@ -2131,6 +2270,8 @@ def _compose_summary_documents(
         }
     )
 
+    cache_dir = _resolve_video_cache_dir(video_url)
+
     title_raw = re.sub(r'[:\/\\`]', '', str(video_metadata.get("title") or ""))
     title = str(title_raw or "未知标题").strip() or "未知标题"
     publish_date_raw = str(video_metadata.get("upload_date") or "").strip()
@@ -2138,6 +2279,13 @@ def _compose_summary_documents(
 
     source_url = str(video_metadata.get("webpage_url") or video_url)
     domain = _extract_domain(video_metadata)
+    if domain == "通用":
+        inferred = _infer_domain_from_summary(raw_summary)
+        if inferred:
+            domain = inferred
+        elif "科技" in raw_summary:
+            domain = "Tech"
+    domain = _normalize_domain_label(domain)
     if domain == "通用":
         generated_domain = _infer_domain_from_summary(raw_summary)
         if generated_domain:
@@ -2157,6 +2305,7 @@ def _compose_summary_documents(
     summary_lines.append("## 封面")
     summary_lines.append(f"- 标题：{title}")
     summary_lines.append(f"- 链接：{source_url}")
+    summary_lines.append(f"- 缓存目录：{cache_dir}")
     summary_lines.append(f"- 发布日期：{publish_date}")
     summary_lines.append(f"- 总字数：{total_words}")
     summary_lines.append(f"- 预估阅读时长：约 {estimated_minutes} 分钟")
@@ -2164,7 +2313,25 @@ def _compose_summary_documents(
     summary_lines.append(f"- 覆盖时长：{formatted_duration}")
 
     summary_lines.append("")
-    summary_lines.append(raw_summary.strip())
+    if is_article:
+        summary_body = _append_article_assets(raw_summary.strip(), video_metadata)
+    else:
+        summary_body = raw_summary.strip()
+
+    summary_lines.append(summary_body)
+    summary_lines.append("")
+    if not is_article:
+        summary_lines.append("## 原文/双语对照")
+        for segment in sorted_segments:
+            text = str(segment.get("text", ""))
+            if not text.strip():
+                continue
+            start = _format_timestamp(segment.get("start", 0.0))
+            end = _format_timestamp(segment.get("end", segment.get("start", 0.0)))
+            speaker = str(segment.get("speaker", "")).strip() or "-"
+            summary_lines.append(
+                f"- {start}-{end} {speaker}: {text.strip()}"
+            )
     summary_lines.append("")
     summary_lines.extend(_build_exchange_footer())
 
@@ -2174,6 +2341,7 @@ def _compose_summary_documents(
     timeline_lines.append("## 封面")
     timeline_lines.append(f"- 标题：{title}")
     timeline_lines.append(f"- 链接：{source_url}")
+    timeline_lines.append(f"- 缓存目录：{cache_dir}")
     timeline_lines.append(f"- 发布日期：{publish_date}")
     timeline_lines.append(f"- 总字数：{total_words}")
     timeline_lines.append(f"- 预估阅读时长：约 {estimated_minutes} 分钟")
@@ -2184,8 +2352,8 @@ def _compose_summary_documents(
 
     timeline_lines.append("")
     timeline_lines.append("## 时间轴")
-    timeline_lines.append("| 序号 | 起始 | 结束 | 时长 | 说话人 | 文本 |")
-    timeline_lines.append("| --- | --- | --- | --- | --- | --- |")
+    timeline_lines.append("| 序号 | 起始 | 结束 | 时长 | 说话人 | 文本 | 原文 |")
+    timeline_lines.append("| --- | --- | --- | --- | --- | --- | --- |")
 
     for index, segment in enumerate(sorted_segments, start=1):
         start_seconds = float(segment.get("start", 0.0))
@@ -2193,15 +2361,17 @@ def _compose_summary_documents(
         duration_seconds = max(0.0, end_seconds - start_seconds)
         speaker = str(segment.get("speaker", "")).strip() or "-"
         text = str(segment.get("text", ""))
-        cell_text = _sanitize_markdown_cell(text)
+        cell_summary = _sanitize_markdown_cell(raw_summary)
+        cell_original = _sanitize_markdown_cell(text)
         timeline_lines.append(
-            "| {idx} | {start} | {end} | {duration} | {speaker} | {text} |".format(
+            "| {idx} | {start} | {end} | {duration} | {speaker} | {text} | {original} |".format(
                 idx=index,
                 start=_format_timestamp(start_seconds),
                 end=_format_timestamp(end_seconds),
                 duration=_format_timestamp(duration_seconds),
                 speaker=_sanitize_markdown_cell(speaker),
-                text=cell_text,
+                text=cell_summary if not is_article else cell_original,
+                original=cell_original,
             )
         )
 
@@ -2338,38 +2508,73 @@ def _write_summary_documents(
     summary_markdown: str,
     timeline_markdown: str,
     file_base: str,
+    write_timeline: bool = True,
 ) -> Mapping[str, str]:
     if not summary_markdown or not summary_markdown.strip():
         raise RuntimeError("无法写入空的摘要 Markdown 内容。")
-    if not timeline_markdown or not timeline_markdown.strip():
-        raise RuntimeError("无法写入空的时间轴 Markdown 内容。")
 
     directory = _resolve_video_cache_dir(video_url)
     summary_filename = f"{file_base}_summary.md"
-    timeline_filename = f"{file_base}_timeline.md"
     summary_path = _ensure_unique_markdown_path(directory, summary_filename)
-    timeline_path = _ensure_unique_markdown_path(directory, timeline_filename)
+
+    timeline_path: Optional[str] = None
+    if write_timeline:
+        if not timeline_markdown or not timeline_markdown.strip():
+            raise RuntimeError("无法写入空的时间轴 Markdown 内容。")
+        timeline_filename = f"{file_base}_timeline.md"
+        timeline_path = _ensure_unique_markdown_path(directory, timeline_filename)
 
     try:
         with open(summary_path, "w", encoding="utf-8") as summary_file:
             summary_file.write(summary_markdown)
-        with open(timeline_path, "w", encoding="utf-8") as timeline_file:
-            timeline_file.write(timeline_markdown)
+        if write_timeline and timeline_path is not None:
+            with open(timeline_path, "w", encoding="utf-8") as timeline_file:
+                timeline_file.write(timeline_markdown)
     except OSError as exc:  # pragma: no cover - filesystem failure
         raise RuntimeError(
             f"写入摘要/时间轴 Markdown 文件失败：{summary_path}, {timeline_path}"
         ) from exc
 
-    result: Dict[str, str] = {
-        "summary": summary_path,
-        "timeline": timeline_path,
-    }
+    result: Dict[str, str] = {"summary": summary_path}
+    if timeline_path is not None:
+        result["timeline"] = timeline_path
 
     outbox_summary = _copy_file_to_outbox(summary_path)
     if outbox_summary is not None:
         result["outbox_summary"] = outbox_summary
 
     return result
+
+
+def _append_article_assets(
+    summary_markdown: str, article_metadata: Optional[Mapping[str, Any]]
+) -> str:
+    """Append article asset links (images/tables) to summary markdown."""
+
+    if not article_metadata:
+        return summary_markdown
+
+    image_urls = article_metadata.get("image_urls") if isinstance(article_metadata, Mapping) else None
+    table_urls = article_metadata.get("table_urls") if isinstance(article_metadata, Mapping) else None
+
+    images: List[str] = []
+    tables: List[str] = []
+
+    if isinstance(image_urls, list):
+        images = [str(item) for item in image_urls if str(item).strip()]
+    if isinstance(table_urls, list):
+        tables = [str(item) for item in table_urls if str(item).strip()]
+
+    if not images and not tables:
+        return summary_markdown
+
+    lines = [summary_markdown.rstrip(), "", "## 附件链接"]
+    if images:
+        lines.append("- 图片：" + ", ".join(images))
+    if tables:
+        lines.append("- 表格：" + ", ".join(tables))
+
+    return "\n".join(lines) + "\n"
 
 
 def _ensure_unique_markdown_path(directory: str, filename: str) -> str:
@@ -3225,7 +3430,19 @@ def _max_segment_end(
 def _is_stream_transport_error(exc: BaseException) -> bool:
     if RemoteProtocolError is not None and isinstance(exc, RemoteProtocolError):
         return True
-    return isinstance(exc, ConnectionError)
+    if CoreRemoteProtocolError is not None and isinstance(exc, CoreRemoteProtocolError):
+        return True
+    if ConnectError is not None and isinstance(exc, ConnectError):
+        return True
+    if CoreConnectError is not None and isinstance(exc, CoreConnectError):
+        return True
+    if isinstance(exc, ConnectionError):
+        return True
+    try:
+        import httpx
+    except Exception:  # pragma: no cover - 可选依赖
+        return False
+    return isinstance(exc, httpx.TimeoutException)
 
 
 def _consume_transcription_response(
@@ -3263,7 +3480,7 @@ def _consume_transcription_response(
                 final_payload = payload
                 _record(payload)
         except BaseException as exc:  # pragma: no cover - exercised via tests
-            if _is_stream_transport_error(exc) and collected:
+            if _is_stream_transport_error(exc):
                 stream_error = exc
             else:
                 raise
@@ -3277,7 +3494,7 @@ def _consume_transcription_response(
 
         if not collected:
             if stream_error is not None:
-                raise stream_error
+                return final_payload
             return final_payload
 
         result = dict(final_payload) if final_payload else {}

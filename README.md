@@ -115,7 +115,7 @@ python -m any2summary.cli \
   --known-speaker "Host=./samples/host.wav"
 ```
 - Audio is cached under `~/.cache/any2summary/youtube/<video-id>/` and split when needed.
-- JSON output includes inline `summary`/`timeline` plus `summary_path` pointing to Markdown files; a copy is placed under `ANY2SUMMARY_OUTBOX_DIR`.
+- JSON output includes inline `summary`/`timeline` plus `summary_path` pointing to Markdown files; a copy is placed under `ANY2SUMMARY_OUTBOX_DIR`（文章/博客链接仅生成 summary，不会生成 timeline 文件，即便是 bilibili 等媒体域名下的阅读页也视为文章）。
 
 ### 3. Article mode
 ```bash
@@ -151,7 +151,7 @@ python -m any2summary.cli \
 - **Default prompt management:** editing `prompts/summary_prompt.txt` or `prompts/article_prompt.txt` immediately updates the CLI’s built-in behavior.
 - **Speaker accuracy:** use `--known-speaker name=sample.wav` or `--known-speaker-name` hints to improve Azure labels.
 - **Azure streaming:** enabled by default; disable with `--no-azure-streaming` in CI or log-sensitive environments.
-- **Streaming resiliency:** `_consume_transcription_response` now logs a warning and preserves collected chunks when Azure closes the HTTP stream early (e.g., `RemoteProtocolError`) so diarization can still finish.
+- **Streaming resiliency & checkpoints:** `_consume_transcription_response` logs warnings and preserves collected chunks when Azure closes the HTTP stream early (e.g., `RemoteProtocolError`、`httpcore.RemoteProtocolError`), and diarization writes per-segment checkpoints (`diarization.partial.json`) so long audios can resume after connection errors without restarting from scratch.
 - **Retry safety:** `_run_single_with_retry` reruns each URL once when the first attempt returns a non-zero exit code, and `_run_multiple` mirrors the behavior for batch jobs to smooth over transient network errors.
 - **Android fallback:** `yt_dlp` automatically retries with Android settings on YouTube 403 errors; provide cookies through `ANY2SUMMARY_YTDLP_COOKIES` for gated content.
 - **Payload debugging:** set `ANY2SUMMARY_DEBUG_PAYLOAD=1` to dump raw Azure responses as JSON in the cache folder.
