@@ -13,8 +13,15 @@ const cacheMaxEl = document.getElementById("cacheMax");
 const localServerEnabledEl = document.getElementById("localServerEnabled");
 const localServerUrlEl = document.getElementById("localServerUrl");
 const serverStatusEl = document.getElementById("serverStatus");
-// 新增：自动保存配置
+// 摘要配置
+const summaryLengthEl = document.getElementById("summaryLength");
+// 语言偏好配置
+const preferredLanguageEl = document.getElementById("preferredLanguage");
+const fallbackLanguagesEl = document.getElementById("fallbackLanguages");
+// 自动保存配置
 const autoSaveSummaryEl = document.getElementById("autoSaveSummary");
+const saveTimelineEl = document.getElementById("saveTimeline");
+const inferDomainEl = document.getElementById("inferDomain");
 const saveSubdirectoryEl = document.getElementById("saveSubdirectory");
 // Toast 元素
 const toastEl = document.getElementById("toast");
@@ -79,8 +86,15 @@ async function restore() {
   cacheMaxEl.value = settings.cache_max_entries ?? 50;
   localServerEnabledEl.checked = settings.local_server_enabled ?? false;
   localServerUrlEl.value = settings.local_server_url || "http://127.0.0.1:8765";
-  // 新增配置项
+  // 摘要配置
+  summaryLengthEl.value = settings.summary_length || "standard";
+  // 语言偏好配置
+  preferredLanguageEl.value = settings.preferred_language || "en";
+  fallbackLanguagesEl.value = (settings.fallback_languages || ["zh-Hans", "zh-Hant", "ja", "ko"]).join(",");
+  // 自动保存配置
   autoSaveSummaryEl.checked = settings.auto_save_summary ?? true;
+  saveTimelineEl.checked = settings.save_timeline ?? true;
+  inferDomainEl.checked = settings.infer_domain ?? true;
   saveSubdirectoryEl.value = settings.save_subdirectory || "any2summary";
 }
 
@@ -88,6 +102,16 @@ async function restore() {
  * 保存设置
  */
 async function persist() {
+  // 解析备选语言列表
+  const fallbackLangsRaw = fallbackLanguagesEl.value.trim();
+  const fallbackLanguages = fallbackLangsRaw
+    ? fallbackLangsRaw.split(",").map(s => s.trim()).filter(Boolean)
+    : ["zh-Hans", "zh-Hant", "ja", "ko"];
+
+  // 构建首选语言列表（首选 + 备选）
+  const preferredLanguage = preferredLanguageEl.value || "en";
+  const preferredLanguages = [preferredLanguage, ...fallbackLanguages.filter(l => l !== preferredLanguage)];
+
   const settings = {
     azure_endpoint: endpointEl.value.trim(),
     azure_api_version: apiVersionEl.value.trim(),
@@ -99,8 +123,16 @@ async function persist() {
     cache_max_entries: Number(cacheMaxEl.value) || 50,
     local_server_enabled: localServerEnabledEl.checked,
     local_server_url: localServerUrlEl.value.trim() || "http://127.0.0.1:8765",
-    // 新增配置项
+    // 摘要配置
+    summary_length: summaryLengthEl.value || "standard",
+    // 语言偏好配置
+    preferred_language: preferredLanguage,
+    fallback_languages: fallbackLanguages,
+    preferred_languages: preferredLanguages,  // 合并后的列表，供 summarize 使用
+    // 自动保存配置
     auto_save_summary: autoSaveSummaryEl.checked,
+    save_timeline: saveTimelineEl.checked,
+    infer_domain: inferDomainEl.checked,
     save_subdirectory: saveSubdirectoryEl.value.trim() || "any2summary",
   };
   await saveSettings(settings);

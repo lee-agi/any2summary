@@ -43,6 +43,7 @@ from typing import (
     Tuple,
     Union,
 )
+from dataclasses import dataclass, field
 from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
 
 try:  # pragma: no cover - optional dependency already required by openai
@@ -68,6 +69,23 @@ try:  # pragma: no cover - numpy for audio processing
 except ImportError:  # pragma: no cover - numpy not installed
     np = None  # type: ignore[assignment]
     _NUMPY_AVAILABLE = False
+
+try:  # pragma: no cover - rich for beautiful progress bars
+    from rich.progress import (
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        BarColumn,
+        TaskProgressColumn,
+        TimeRemainingColumn,
+        TimeElapsedColumn,
+    )
+    from rich.console import Console
+    _RICH_AVAILABLE = True
+except ImportError:  # pragma: no cover - rich not installed
+    Progress = None  # type: ignore[assignment]
+    Console = None  # type: ignore[assignment]
+    _RICH_AVAILABLE = False
 
 
 DEFAULT_YTDLP_USER_AGENT = (
@@ -98,8 +116,351 @@ PROMPTS_ROOT = Path(__file__).resolve().parents[1] / "prompts"
 DEFAULT_SUMMARY_PROMPT_PATH = PROMPTS_ROOT / "summary_prompt.txt"
 DEFAULT_ARTICLE_PROMPT_PATH = PROMPTS_ROOT / "article_prompt.txt"
 
+# Supported file extensions for local file processing
+SUPPORTED_AUDIO_EXTENSIONS = frozenset({".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg"})
+SUPPORTED_VIDEO_EXTENSIONS = frozenset({".mp4", ".mkv", ".webm", ".avi", ".mov"})
+SUPPORTED_DOCUMENT_EXTENSIONS = frozenset({".pdf"})
+
+# Summary length configuration presets
+SUMMARY_LENGTH_CONFIGS: Dict[str, Dict[str, Any]] = {
+    "brief": {
+        "max_tokens": 2048,
+        "prompt_modifier": "\n\n【输出要求】请用 3-5 句话简洁总结核心内容，省略次要细节。",
+    },
+    "standard": {
+        "max_tokens": 16384,
+        "prompt_modifier": "",
+    },
+    "detailed": {
+        "max_tokens": 16384,
+        "prompt_modifier": "\n\n【输出要求】请详细展开每个要点，提供充分的上下文和解释。",
+    },
+    "full": {
+        "max_tokens": 32768,
+        "prompt_modifier": "\n\n【输出要求】请完整翻译全部内容，不做任何压缩或省略，保留所有细节。",
+    },
+}
+
+
+def _get_summary_length_config(length: Optional[str]) -> Dict[str, Any]:
+    """Get summary length configuration by name.
+
+    Args:
+        length: Summary length name (brief/standard/detailed/full) or None for default.
+
+    Returns:
+        Configuration dict with max_tokens and prompt_modifier.
+
+    Raises:
+        ValueError: If length name is invalid.
+    """
+    if length is None:
+        return SUMMARY_LENGTH_CONFIGS["standard"]
+    if length not in SUMMARY_LENGTH_CONFIGS:
+        valid = ", ".join(SUMMARY_LENGTH_CONFIGS.keys())
+        raise ValueError(f"无效的摘要长度 '{length}'，有效选项: {valid}")
+    return SUMMARY_LENGTH_CONFIGS[length]
+
+
+def _build_length_prompt_modifier(length: Optional[str]) -> str:
+    """Build prompt modifier string for the given summary length.
+
+    Args:
+        length: Summary length name or None for default.
+
+    Returns:
+        Prompt modifier string to append to the base prompt.
+    """
+    if length is None:
+        return ""
+    config = _get_summary_length_config(length)
+    return config.get("prompt_modifier", "")
+
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _detect_file_type(file_path: str) -> str:
+    """Detect the type of a local file based on extension.
+
+    Args:
+        file_path: Path to the file.
+
+    Returns:
+        File type: 'audio', 'video', 'document', or 'unknown'.
+    """
+    ext = Path(file_path).suffix.lower()
+    if ext in SUPPORTED_AUDIO_EXTENSIONS:
+        return "audio"
+    if ext in SUPPORTED_VIDEO_EXTENSIONS:
+        return "video"
+    if ext in SUPPORTED_DOCUMENT_EXTENSIONS:
+        return "document"
+    return "unknown"
+
+
+def _resolve_file_cache_dir(file_path: str) -> str:
+    """Resolve cache directory for a local file.
+
+    Args:
+        file_path: Path to the file.
+
+    Returns:
+        Path to cache directory based on file path hash.
+    """
+    # Use absolute path for consistent hashing
+    abs_path = os.path.abspath(file_path)
+    path_hash = hashlib.md5(abs_path.encode("utf-8")).hexdigest()[:12]
+    file_name = Path(file_path).stem[:20]  # Truncate long names
+    cache_name = f"file_{file_name}_{path_hash}"
+    return os.path.join(tempfile.gettempdir(), "any2summary_cache", cache_name)
+
+
+def _extract_audio_from_video(video_path: str, output_dir: str) -> str:
+    """Extract audio track from video file using ffmpeg.
+
+    Args:
+        video_path: Path to video file.
+        output_dir: Directory to save extracted audio.
+
+    Returns:
+        Path to extracted audio file.
+
+    Raises:
+        RuntimeError: If ffmpeg fails or is not available.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "extracted_audio.wav")
+
+    if os.path.isfile(output_path):
+        return output_path
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        raise RuntimeError("ffmpeg 未安装。请安装 ffmpeg: brew install ffmpeg")
+
+    cmd = [
+        ffmpeg_path,
+        "-i", video_path,
+        "-vn",  # No video
+        "-acodec", "pcm_s16le",
+        "-ar", "16000",  # 16kHz sample rate
+        "-ac", "1",  # Mono
+        "-y",  # Overwrite
+        output_path,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg 提取音频失败: {result.stderr[:200]}")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("ffmpeg 提取音频超时")
+
+    return output_path
+
+
+def _extract_text_from_pdf(pdf_path: str) -> List[MutableMapping[str, Any]]:
+    """Extract text from PDF file.
+
+    Args:
+        pdf_path: Path to PDF file.
+
+    Returns:
+        List of segments with extracted text.
+
+    Raises:
+        RuntimeError: If pdfplumber is not available.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        raise RuntimeError(
+            "pdfplumber 未安装。请执行: pip install pdfplumber"
+        )
+
+    segments: List[MutableMapping[str, Any]] = []
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page_num, page in enumerate(pdf.pages):
+                text = page.extract_text()
+                if text and text.strip():
+                    segments.append({
+                        "start": float(page_num),
+                        "end": float(page_num + 1),
+                        "text": text.strip(),
+                        "page": page_num + 1,
+                    })
+    except Exception as exc:
+        raise RuntimeError(f"PDF 解析失败: {exc}")
+
+    if not segments:
+        raise RuntimeError("PDF 文件中未提取到文本内容")
+
+    return segments
+
+
+def _transcribe_local_audio(
+    audio_path: str,
+    language: str,
+    cache_dir: str,
+    streaming: bool = True,
+) -> List[MutableMapping[str, Any]]:
+    """Transcribe local audio file using Azure OpenAI.
+
+    Args:
+        audio_path: Path to audio file.
+        language: Language code for transcription.
+        cache_dir: Directory for caching results.
+        streaming: Whether to use streaming mode.
+
+    Returns:
+        List of transcript segments.
+    """
+    # This uses the existing Azure diarization infrastructure
+    # Create a file:// URL to pass to existing functions
+    abs_path = os.path.abspath(audio_path)
+    return _transcribe_audio_file_direct(abs_path, language, cache_dir, streaming)
+
+
+def _transcribe_audio_file_direct(
+    audio_path: str,
+    language: str,
+    cache_dir: str,
+    streaming: bool = True,
+) -> List[MutableMapping[str, Any]]:
+    """Direct transcription of audio file via Azure Whisper.
+
+    Args:
+        audio_path: Absolute path to audio file.
+        language: Language code.
+        cache_dir: Cache directory.
+        streaming: Whether to use streaming.
+
+    Returns:
+        List of transcript segments.
+    """
+    azure_key = os.getenv("AZURE_OPENAI_API_KEY")
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+
+    if not azure_key or not azure_endpoint:
+        raise RuntimeError(
+            "Azure OpenAI 凭据缺失。请设置 AZURE_OPENAI_API_KEY 与 AZURE_OPENAI_ENDPOINT。"
+        )
+
+    deployment = os.getenv("AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT") or "whisper"
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION") or "2024-06-01"
+
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # Check for cached result
+    cache_file = os.path.join(cache_dir, "transcription.json")
+    if os.path.isfile(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+                if cached.get("segments"):
+                    return cached["segments"]
+        except Exception:
+            pass
+
+    try:
+        from openai import AzureOpenAI
+    except ImportError:
+        raise RuntimeError("openai 库未安装。请执行: pip install openai")
+
+    client = AzureOpenAI(
+        api_key=azure_key,
+        api_version=api_version,
+        azure_endpoint=azure_endpoint,
+        http_client=_create_azure_http_client(),
+    )
+
+    with open(audio_path, "rb") as audio_file:
+        response = client.audio.transcriptions.create(
+            model=deployment,
+            file=audio_file,
+            language=language,
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
+        )
+
+    segments: List[MutableMapping[str, Any]] = []
+    if hasattr(response, "segments") and response.segments:
+        for seg in response.segments:
+            segments.append({
+                "start": getattr(seg, "start", 0.0),
+                "end": getattr(seg, "end", 0.0),
+                "text": getattr(seg, "text", ""),
+            })
+    elif hasattr(response, "text") and response.text:
+        segments.append({
+            "start": 0.0,
+            "end": 0.0,
+            "text": response.text,
+        })
+
+    # Cache result
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump({"segments": segments}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    return segments
+
+
+def _process_local_file(
+    file_path: str,
+    language: str,
+    streaming: bool = True,
+) -> List[MutableMapping[str, Any]]:
+    """Process a local file and return transcript segments.
+
+    Args:
+        file_path: Path to local file.
+        language: Language code for transcription.
+        streaming: Whether to use streaming mode for Azure.
+
+    Returns:
+        List of transcript segments.
+
+    Raises:
+        FileNotFoundError: If file does not exist.
+        ValueError: If file type is not supported.
+    """
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"文件不存在: {file_path}")
+
+    file_type = _detect_file_type(file_path)
+    cache_dir = _resolve_file_cache_dir(file_path)
+
+    if file_type == "unknown":
+        supported = (
+            list(SUPPORTED_AUDIO_EXTENSIONS)
+            + list(SUPPORTED_VIDEO_EXTENSIONS)
+            + list(SUPPORTED_DOCUMENT_EXTENSIONS)
+        )
+        raise ValueError(
+            f"不支持的文件类型: {Path(file_path).suffix}。"
+            f"支持的格式: {', '.join(sorted(supported))}"
+        )
+
+    if file_type == "document":
+        return _extract_text_from_pdf(file_path)
+
+    if file_type == "video":
+        # Extract audio first
+        audio_path = _extract_audio_from_video(file_path, cache_dir)
+    else:
+        audio_path = file_path
+
+    return _transcribe_local_audio(audio_path, language, cache_dir, streaming)
 
 
 def _create_azure_http_client() -> Optional["httpx.Client"]:
@@ -335,8 +696,14 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
 
     # Check if first arg is a subcommand
     args_list = list(argv) if argv is not None else sys.argv[1:]
-    if args_list and args_list[0] == "serve":
-        return _run_serve_command(args_list[1:])
+    if args_list:
+        subcommand = args_list[0]
+        if subcommand == "serve":
+            return _run_serve_command(args_list[1:])
+        if subcommand == "doctor":
+            return _run_doctor_command(args_list[1:])
+        if subcommand == "init":
+            return _run_init_command(args_list[1:])
 
     # Default behavior: summarize command
     return _run_summarize_command(argv)
@@ -386,6 +753,295 @@ def _run_serve_command(argv: Sequence[str]) -> int:
         return 0
 
 
+def _run_doctor_command(argv: Sequence[str]) -> int:
+    """Run health check diagnostics for any2summary dependencies.
+
+    Args:
+        argv: Arguments for the doctor subcommand (currently unused).
+
+    Returns:
+        Process exit code. 0 if all checks pass, 1 if any critical check fails.
+    """
+    parser = argparse.ArgumentParser(
+        prog="any2summary doctor",
+        description="Check system dependencies and service connectivity.",
+    )
+    parser.parse_args(argv)
+
+    print("🩺 any2summary 健康检查\n")
+
+    checks_passed = 0
+    checks_failed = 0
+
+    def _check(name: str, condition: bool, error_msg: str = "") -> bool:
+        nonlocal checks_passed, checks_failed
+        if condition:
+            print(f"  ✓ {name}")
+            checks_passed += 1
+            return True
+        else:
+            msg = f"  ✗ {name}"
+            if error_msg:
+                msg += f" - {error_msg}"
+            print(msg)
+            checks_failed += 1
+            return False
+
+    # 1. Python version check
+    py_version = sys.version_info
+    py_ok = py_version >= (3, 10)
+    _check(
+        f"Python 版本 ({py_version.major}.{py_version.minor}.{py_version.micro})",
+        py_ok,
+        "需要 Python >= 3.10",
+    )
+
+    # 2. ffmpeg check
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffmpeg_version = ""
+    if ffmpeg_path:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            first_line = result.stdout.split("\n")[0] if result.stdout else ""
+            if "version" in first_line.lower():
+                ffmpeg_version = first_line.split()[2] if len(first_line.split()) > 2 else ""
+        except Exception:
+            pass
+    ffmpeg_info = f"ffmpeg ({ffmpeg_version})" if ffmpeg_version else "ffmpeg"
+    _check(ffmpeg_info, ffmpeg_path is not None, "请安装 ffmpeg: brew install ffmpeg")
+
+    # 3. yt-dlp check
+    ytdlp_path = shutil.which("yt-dlp")
+    ytdlp_version = ""
+    if ytdlp_path:
+        try:
+            result = subprocess.run(
+                ["yt-dlp", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            ytdlp_version = result.stdout.strip() if result.stdout else ""
+        except Exception:
+            pass
+    ytdlp_info = f"yt-dlp ({ytdlp_version})" if ytdlp_version else "yt-dlp"
+    _check(ytdlp_info, ytdlp_path is not None, "请安装 yt-dlp: pip install yt-dlp")
+
+    # 4. Python packages check
+    print("\n  Python 依赖包:")
+    required_packages = [
+        ("numpy", "numpy"),
+        ("httpx", "httpx"),
+        ("youtube_transcript_api", "youtube-transcript-api"),
+        ("openai", "openai"),
+    ]
+
+    for module_name, package_name in required_packages:
+        try:
+            __import__(module_name)
+            _check(f"    {package_name}", True)
+        except ImportError:
+            _check(f"    {package_name}", False, f"pip install {package_name}")
+
+    # 5. Optional packages
+    print("\n  可选依赖包:")
+    optional_packages = [
+        ("rich", "rich", "进度条美化"),
+        ("pdfplumber", "pdfplumber", "PDF 文件处理"),
+    ]
+
+    for module_name, package_name, description in optional_packages:
+        try:
+            __import__(module_name)
+            print(f"  ✓ {package_name} ({description})")
+        except ImportError:
+            print(f"  ○ {package_name} ({description}) - 未安装")
+
+    # 6. .env file check
+    print("\n  配置文件:")
+    env_path = Path(".env")
+    env_exists = env_path.is_file()
+    _check(".env 文件", env_exists, "运行 `any2summary init` 创建配置文件")
+
+    # 7. Environment variables check
+    print("\n  环境变量:")
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    azure_key = os.getenv("AZURE_OPENAI_API_KEY")
+
+    _check(
+        "AZURE_OPENAI_ENDPOINT",
+        azure_endpoint is not None and azure_endpoint.strip() != "",
+        "未设置",
+    )
+    _check(
+        "AZURE_OPENAI_API_KEY",
+        azure_key is not None and azure_key.strip() != "",
+        "未设置",
+    )
+
+    # Optional deployment names
+    transcription_deployment = os.getenv("AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT")
+    summary_deployment = os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT")
+    if transcription_deployment:
+        print(f"  ✓ AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT = {transcription_deployment}")
+    else:
+        print("  ○ AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT - 未设置（将使用默认值）")
+    if summary_deployment:
+        print(f"  ✓ AZURE_OPENAI_SUMMARY_DEPLOYMENT = {summary_deployment}")
+    else:
+        print("  ○ AZURE_OPENAI_SUMMARY_DEPLOYMENT - 未设置（将使用默认值）")
+
+    # 8. Azure connectivity test
+    print("\n  Azure 连通性:")
+    if azure_endpoint and azure_key:
+        try:
+            if _HTTPX_AVAILABLE and httpx is not None:
+                # Send a simple request to check connectivity
+                test_url = azure_endpoint.rstrip("/") + "/openai/models?api-version=2024-02-01"
+                client = httpx.Client(timeout=10.0)
+                response = client.get(
+                    test_url,
+                    headers={"api-key": azure_key},
+                )
+                if response.status_code in (200, 401, 403):
+                    # 200 = success, 401/403 = auth issue but endpoint reachable
+                    _check("Azure OpenAI 端点可达", True)
+                else:
+                    _check(
+                        "Azure OpenAI 端点",
+                        False,
+                        f"HTTP {response.status_code}",
+                    )
+            else:
+                print("  ○ Azure 连通性测试 - httpx 不可用，跳过")
+        except Exception as exc:
+            _check("Azure OpenAI 端点可达", False, str(exc)[:50])
+    else:
+        print("  ○ Azure 连通性测试 - 跳过（缺少凭据）")
+
+    # 9. Cache directory check
+    print("\n  缓存目录:")
+    cache_dir = Path(tempfile.gettempdir()) / "any2summary_cache"
+    cache_exists = cache_dir.exists()
+    if cache_exists:
+        _check(f"缓存目录 ({cache_dir})", True)
+    else:
+        print(f"  ○ 缓存目录 ({cache_dir}) - 尚未创建")
+
+    # Summary
+    print("\n" + "─" * 50)
+    total = checks_passed + checks_failed
+    if checks_failed == 0:
+        print(f"✅ 所有检查通过 ({checks_passed}/{total})")
+        return 0
+    else:
+        print(f"⚠️  {checks_failed} 项检查未通过，{checks_passed} 项通过")
+        print("\n💡 提示：运行 `any2summary init` 可以快速配置 Azure 凭据")
+        return 1
+
+
+def _run_init_command(argv: Sequence[str]) -> int:
+    """Run interactive configuration wizard.
+
+    Args:
+        argv: Arguments for the init subcommand.
+
+    Returns:
+        Process exit code.
+    """
+    parser = argparse.ArgumentParser(
+        prog="any2summary init",
+        description="Interactive configuration wizard for any2summary.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing .env file without prompting",
+    )
+    args = parser.parse_args(argv)
+
+    print("🚀 any2summary 配置向导\n")
+
+    env_path = Path(".env")
+    if env_path.exists() and not args.force:
+        response = input(f"⚠️  {env_path} 已存在，是否覆盖？[y/N] ").strip().lower()
+        if response not in ("y", "yes"):
+            print("已取消。")
+            return 0
+
+    print("请输入 Azure OpenAI 配置信息（直接回车跳过）:\n")
+
+    # Collect configuration
+    endpoint = input("Azure OpenAI Endpoint (例如 https://xxx.openai.azure.com): ").strip()
+    api_key = input("Azure OpenAI API Key: ").strip()
+    transcription_deployment = input(
+        "转写模型部署名 (默认: whisper): "
+    ).strip() or "whisper"
+    summary_deployment = input(
+        "摘要模型部署名 (默认: gpt-5-pro): "
+    ).strip() or "gpt-5-pro"
+
+    # Validate endpoint format
+    if endpoint and not endpoint.startswith("https://"):
+        print("⚠️  Endpoint 应以 https:// 开头")
+        endpoint = "https://" + endpoint
+
+    # Test connectivity if credentials provided
+    if endpoint and api_key:
+        print("\n🔍 验证 Azure 连通性...")
+        try:
+            if _HTTPX_AVAILABLE and httpx is not None:
+                test_url = endpoint.rstrip("/") + "/openai/models?api-version=2024-02-01"
+                client = httpx.Client(timeout=10.0)
+                response = client.get(
+                    test_url,
+                    headers={"api-key": api_key},
+                )
+                if response.status_code == 200:
+                    print("✓ Azure 连接成功！")
+                elif response.status_code in (401, 403):
+                    print("⚠️  Azure 端点可达，但 API Key 可能无效")
+                else:
+                    print(f"⚠️  Azure 返回状态码: {response.status_code}")
+            else:
+                print("○ 跳过连通性测试（httpx 不可用）")
+        except Exception as exc:
+            print(f"⚠️  连接测试失败: {exc}")
+
+    # Generate .env content
+    env_content = f"""# any2summary Azure OpenAI 配置
+# 由 `any2summary init` 自动生成
+
+AZURE_OPENAI_ENDPOINT={endpoint}
+AZURE_OPENAI_API_KEY={api_key}
+AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT={transcription_deployment}
+AZURE_OPENAI_SUMMARY_DEPLOYMENT={summary_deployment}
+"""
+
+    # Write file
+    try:
+        env_path.write_text(env_content, encoding="utf-8")
+        print(f"\n✅ 配置已保存到 {env_path}")
+    except OSError as exc:
+        print(f"\n❌ 写入文件失败: {exc}")
+        return 1
+
+    # Show summary
+    print("\n📋 配置摘要:")
+    print(f"   Endpoint: {endpoint or '(未设置)'}")
+    print(f"   API Key: {'*' * 8 if api_key else '(未设置)'}")
+    print(f"   转写模型: {transcription_deployment}")
+    print(f"   摘要模型: {summary_deployment}")
+
+    print("\n💡 提示：运行 `any2summary doctor` 可以验证配置是否正确")
+    return 0
+
+
 def _run_summarize_command(argv: Optional[Sequence[str]] = None) -> int:
     """Run the main summarization command.
 
@@ -398,10 +1054,18 @@ def _run_summarize_command(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Download YouTube captions, enrich with optional Azure OpenAI "
-            "diarization, and emit structured JSON output."
+            "diarization, and emit structured JSON output. "
+            "Supports both URLs and local files."
         )
     )
-    parser.add_argument("--url", required=True, help="YouTube video URL")
+    # Mutually exclusive group for input source
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--url", help="YouTube video URL or article URL")
+    input_group.add_argument(
+        "--file",
+        dest="local_file",
+        help="本地音视频或 PDF 文件路径（支持 mp3/m4a/wav/mp4/mkv/webm/pdf）",
+    )
     parser.add_argument(
         "--language",
         default="en",
@@ -480,6 +1144,18 @@ def _run_summarize_command(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="Remove cached artifacts for the provided URL before processing.",
     )
+    parser.add_argument(
+        "--summary-length",
+        type=str,
+        choices=["brief", "standard", "detailed", "full"],
+        default="standard",
+        dest="summary_length",
+        help=(
+            "控制摘要输出的详细程度: "
+            "brief(简洁,3-5句话), standard(标准,默认), "
+            "detailed(详细,展开要点), full(完整翻译,不压缩)"
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -487,6 +1163,11 @@ def _run_summarize_command(argv: Optional[Sequence[str]] = None) -> int:
         _getenv("ANY2SUMMARY_DOTENV", "PODCAST_TRANSFORMER_DOTENV")
     )
 
+    # Handle local file mode
+    if args.local_file:
+        return _run_single_local_file(args)
+
+    # Handle URL mode
     raw_urls = [item.strip() for item in args.url.split(",") if item and item.strip()]
     if not raw_urls:
         raise RuntimeError("--url 参数不能为空。")
@@ -496,6 +1177,126 @@ def _run_summarize_command(argv: Optional[Sequence[str]] = None) -> int:
         return _run_single_with_retry(args)
 
     return _run_multiple(args, raw_urls)
+
+
+def _run_single_local_file(args: argparse.Namespace) -> int:
+    """Process a single local file.
+
+    Args:
+        args: Parsed command line arguments with local_file set.
+
+    Returns:
+        Process exit code.
+    """
+    file_path = args.local_file
+
+    # Validate file exists
+    if not os.path.isfile(file_path):
+        sys.stderr.write(f"错误: 文件不存在: {file_path}\n")
+        return 1
+
+    # Process file validation
+    if args.summary_prompt_file and not args.azure_summary:
+        raise RuntimeError(
+            "--summary-prompt-file 仅能与 --azure-summary 搭配使用。"
+        )
+
+    try:
+        # Process the local file
+        transcript_segments = _process_local_file(
+            file_path,
+            language=args.language,
+            streaming=args.azure_streaming,
+        )
+
+        if not transcript_segments:
+            raise RuntimeError("未能从文件中提取内容。")
+
+        # Merge segments (no diarization for local files currently)
+        merged_segments = merge_segments_with_speakers(transcript_segments, None)
+
+        # Generate summary if requested
+        summary_bundle: Optional[MutableMapping[str, Any]] = None
+        if args.azure_summary:
+            custom_prompt: Optional[str] = None
+            file_type = _detect_file_type(file_path)
+
+            if file_type == "document":
+                # Use article prompt for PDF
+                if args.article_summary_prompt_file:
+                    custom_prompt = _load_summary_prompt_file(
+                        args.article_summary_prompt_file
+                    )
+                else:
+                    custom_prompt = _load_default_article_prompt()
+            elif args.summary_prompt_file:
+                custom_prompt = _load_summary_prompt_file(args.summary_prompt_file)
+            else:
+                custom_prompt = _load_default_summary_prompt()
+
+            # Create a pseudo URL for the file
+            file_url = f"file://{os.path.abspath(file_path)}"
+
+            summary_bundle = generate_translation_summary(
+                merged_segments,
+                file_url,
+                prompt=custom_prompt,
+                metadata={"title": Path(file_path).stem, "source_type": "local_file"},
+                summary_length=args.summary_length,
+            )
+
+        # Output results
+        _output_local_file_results(
+            file_path,
+            merged_segments,
+            summary_bundle,
+        )
+
+        return 0
+
+    except FileNotFoundError as exc:
+        sys.stderr.write(f"错误: {exc}\n")
+        return 1
+    except ValueError as exc:
+        sys.stderr.write(f"错误: {exc}\n")
+        return 1
+    except RuntimeError as exc:
+        sys.stderr.write(f"错误: {exc}\n")
+        return 1
+
+
+def _output_local_file_results(
+    file_path: str,
+    segments: Sequence[MutableMapping[str, Any]],
+    summary_bundle: Optional[MutableMapping[str, Any]],
+) -> None:
+    """Output processing results for a local file.
+
+    Args:
+        file_path: Path to the processed file.
+        segments: Transcript/text segments.
+        summary_bundle: Summary results if available.
+    """
+    if summary_bundle:
+        # Save summary to file
+        summary_paths = summary_bundle.get("paths")
+        if summary_paths:
+            markdown_path = summary_paths.get("summary_markdown")
+            if markdown_path and os.path.isfile(markdown_path):
+                print(f"摘要已保存到: {markdown_path}")
+
+        # Also print to stdout
+        summary_md = summary_bundle.get("summary_markdown", "")
+        if summary_md:
+            print("\n" + "=" * 60)
+            print(summary_md)
+    else:
+        # Output raw segments as JSON
+        output = {
+            "source": file_path,
+            "segments": list(segments),
+        }
+        print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
 def _run_multiple(args: argparse.Namespace, urls: Sequence[str]) -> int:
@@ -780,6 +1581,7 @@ def _run_single(args: argparse.Namespace) -> int:
             args.url,
             prompt=custom_prompt,
             metadata=article_metadata,
+            summary_length=args.summary_length,
         )
         if is_article:
             summary_bundle["summary_markdown"] = _append_article_assets(
@@ -2082,8 +2884,20 @@ def generate_translation_summary(
     video_url: str,
     prompt: Optional[str] = None,
     metadata: Optional[Mapping[str, Any]] = None,
+    summary_length: Optional[str] = None,
 ) -> MutableMapping[str, Any]:
-    """Call Azure GPT-5 to translate and summarize ASR segments."""
+    """Call Azure GPT-5 to translate and summarize ASR segments.
+
+    Args:
+        segments: ASR transcript segments.
+        video_url: Original video/audio URL.
+        prompt: Custom system prompt (optional).
+        metadata: Video metadata (optional).
+        summary_length: Output length preset: brief/standard/detailed/full.
+
+    Returns:
+        Summary bundle with translated content.
+    """
 
     if not segments:
         raise RuntimeError("无法生成翻译摘要：缺少 ASR 结果。")
@@ -2097,7 +2911,15 @@ def generate_translation_summary(
 
     deployment = os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT") or "gpt-5-pro"
 
+    # Get length configuration
+    length_config = _get_summary_length_config(summary_length)
+    max_tokens = length_config["max_tokens"]
+    prompt_modifier = length_config["prompt_modifier"]
+
     instruction = prompt or _load_default_summary_prompt()
+    # Append length modifier to instruction
+    if prompt_modifier:
+        instruction = instruction + prompt_modifier
     timeline = _format_segments_for_summary(segments)
     user_message = "原始 ASR 片段如下：\n" + timeline
 
@@ -2134,7 +2956,7 @@ def generate_translation_summary(
                     "content": [{"type": "input_text", "text": user_message}],
                 },
             ],
-            max_output_tokens=16384,
+            max_output_tokens=max_tokens,
         )
         raw_summary = _extract_responses_text(response)
     else:
@@ -2162,7 +2984,7 @@ def generate_translation_summary(
                 {"role": "system", "content": instruction},
                 {"role": "user", "content": user_message},
             ],
-            max_completion_tokens=16384,
+            max_completion_tokens=max_tokens,
         )
         raw_summary = _extract_summary_text(response)
 
@@ -3687,10 +4509,118 @@ def _estimate_tokens_from_transcript(
     return max(total_chars / 4.0, float(segment_count))
 
 
+# Global rich progress instance for reuse
+_RICH_PROGRESS_INSTANCE: Optional[Any] = None
+_RICH_TASK_ID: Optional[Any] = None
+
+
+class _SimpleProgressContext:
+    """Simple progress context manager for fallback when rich is not available."""
+
+    def __init__(self, description: str, total: float = 100.0) -> None:
+        self.description = description
+        self.total = total
+        self.completed = 0.0
+
+    def __enter__(self) -> "_SimpleProgressContext":
+        return self
+
+    def __exit__(self, *args: Any) -> bool:
+        if self.completed < self.total:
+            _update_progress_bar(1.0, f"{self.description} 完成")
+        return False
+
+    def update(self, advance: float = 1.0, description: str = "") -> None:
+        self.completed += advance
+        ratio = self.completed / self.total if self.total > 0 else 0.0
+        detail = description or self.description
+        _update_progress_bar(ratio, detail)
+
+
+def _create_rich_progress() -> Any:
+    """Create a rich Progress instance with custom columns.
+
+    Returns:
+        Rich Progress instance or None if rich is not available.
+    """
+    if not _RICH_AVAILABLE or Progress is None:
+        return None
+
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(bar_width=30),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=Console(stderr=True),
+        transient=True,
+    )
+
+
+def _create_progress_context(
+    description: str,
+    total: float = 100.0,
+) -> Any:
+    """Create a progress context manager.
+
+    Uses rich Progress if available, otherwise falls back to simple text progress.
+
+    Args:
+        description: Description text for the progress bar.
+        total: Total amount of work to track.
+
+    Returns:
+        Context manager for progress tracking.
+    """
+    if _RICH_AVAILABLE and Progress is not None:
+        progress = _create_rich_progress()
+        if progress:
+            return progress
+    return _SimpleProgressContext(description, total)
+
+
 def _update_progress_bar(ratio: float, detail: str) -> None:
-    """Render a simple textual progress bar to stdout."""
+    """Render a progress bar to stdout.
+
+    Uses rich library if available for beautiful output, otherwise falls back
+    to simple text-based progress bar.
+
+    Args:
+        ratio: Progress ratio from 0.0 to 1.0.
+        detail: Detail text to display alongside the progress bar.
+    """
+    global _RICH_PROGRESS_INSTANCE, _RICH_TASK_ID
 
     ratio = min(max(ratio, 0.0), 1.0)
+
+    if _RICH_AVAILABLE and Progress is not None:
+        try:
+            if _RICH_PROGRESS_INSTANCE is None:
+                _RICH_PROGRESS_INSTANCE = _create_rich_progress()
+                if _RICH_PROGRESS_INSTANCE:
+                    _RICH_PROGRESS_INSTANCE.start()
+                    _RICH_TASK_ID = _RICH_PROGRESS_INSTANCE.add_task(
+                        detail[:60], total=100.0
+                    )
+
+            if _RICH_PROGRESS_INSTANCE and _RICH_TASK_ID is not None:
+                _RICH_PROGRESS_INSTANCE.update(
+                    _RICH_TASK_ID,
+                    completed=ratio * 100.0,
+                    description=detail[:60],
+                )
+
+                if ratio >= 1.0:
+                    _RICH_PROGRESS_INSTANCE.stop()
+                    _RICH_PROGRESS_INSTANCE = None
+                    _RICH_TASK_ID = None
+                return
+        except Exception:
+            # Fall back to simple progress on any error
+            pass
+
+    # Fallback: simple text progress bar
     filled = int(PROGRESS_BAR_WIDTH * ratio)
     bar = "#" * filled + "-" * (PROGRESS_BAR_WIDTH - filled)
     sys.stdout.write(

@@ -326,9 +326,10 @@ function parseArticleHtmlWithRegex(htmlText, pageUrl = null) {
  * Falls back to fetch + regex parsing if scripting is not available.
  * @param {string} url
  * @param {number} [tabId] - Optional tab ID to use for scripting
+ * @param {AbortSignal} [signal] - Optional abort signal
  * @returns {Promise<Object>}
  */
-export async function fetchArticleContent(url, tabId = null) {
+export async function fetchArticleContent(url, tabId = null, signal = null) {
   // Try to use chrome.scripting.executeScript if tabId is provided
   if (tabId && typeof chrome !== "undefined" && chrome.scripting) {
     try {
@@ -357,6 +358,7 @@ export async function fetchArticleContent(url, tabId = null) {
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     },
+    signal,
   });
 
   if (!response.ok) {

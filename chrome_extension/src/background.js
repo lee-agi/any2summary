@@ -5,9 +5,46 @@
  */
 
 import { loadSettings, migrateOldTaskState } from "./storage.js";
-import { summarizeUrl } from "./summarize.js";
-import { saveSummaryAsMarkdown } from "./fileSaver.js";
+import { summarizeUrl, inferDomainFromSummary } from "./summarize.js";
+import { saveSummaryAsMarkdown, saveTimelineAsMarkdown } from "./fileSaver.js";
 import { taskStateManager } from "./taskStateManager.js";
+import { getSummaryLengthConfig } from "./config.js";
+
+// AbortController management for cancellable tasks
+const abortControllers = new Map(); // Map<tabId, AbortController>
+
+/**
+ * Create a new AbortController for a tab.
+ * @param {number} tabId
+ * @returns {AbortController}
+ */
+function createAbortController(tabId) {
+  // Clean up existing controller if any
+  const existing = abortControllers.get(tabId);
+  if (existing) {
+    existing.abort();
+  }
+  const controller = new AbortController();
+  abortControllers.set(tabId, controller);
+  return controller;
+}
+
+/**
+ * Get AbortSignal for a tab.
+ * @param {number} tabId
+ * @returns {AbortSignal|undefined}
+ */
+function getAbortSignal(tabId) {
+  return abortControllers.get(tabId)?.signal;
+}
+
+/**
+ * Clean up AbortController for a tab.
+ * @param {number} tabId
+ */
+function cleanupAbortController(tabId) {
+  abortControllers.delete(tabId);
+}
 
 // Service Worker startup: clean up old states
 (async () => {
@@ -38,6 +75,21 @@ function broadcastStatus(tabId, status, message = "", isError = false) {
   });
 }
 
+/**
+ * 广播进度更新到 popup
+ * @param {number} tabId - The tab ID this progress belongs to
+ * @param {number} ratio - Progress ratio (0.0 - 1.0)
+ * @param {string} label - Progress label text
+ */
+function broadcastProgress(tabId, ratio, label) {
+  chrome.runtime.sendMessage({
+    type: "SUMMARY_PROGRESS",
+    payload: { tabId, ratio, label },
+  }).catch(() => {
+    // Ignore if no receivers
+  });
+}
+
 // Listen for tab close to clean up state
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   console.log("[Background] Tab closed, clearing state:", tabId);
@@ -45,6 +97,32 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Handle CANCEL_TASK message
+  if (message?.type === "CANCEL_TASK") {
+    const tabId = message.tabId;
+    console.log("[Background] Received CANCEL_TASK for tab:", tabId);
+
+    const controller = abortControllers.get(tabId);
+    if (controller) {
+      controller.abort();
+      cleanupAbortController(tabId);
+    }
+
+    // Update state to cancelled
+    (async () => {
+      await taskStateManager.setState(tabId, {
+        status: "cancelled",
+        message: "任务已取消",
+        isError: false,
+        url: "",
+      });
+      broadcastStatus(tabId, "已取消", "任务已取消");
+    })();
+
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (message?.type !== "RUN_SUMMARY") {
     return false;
   }
@@ -52,8 +130,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log("[Background] Received RUN_SUMMARY request");
 
   (async () => {
+    let tab;
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.url) {
         console.error("[Background] Cannot get active tab URL");
         sendResponse({ ok: false, error: "无法获取当前标签页 URL" });
@@ -62,6 +141,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       console.log("[Background] Processing URL:", tab.url);
 
+      // Create AbortController for this task
+      const controller = createAbortController(tab.id);
+
       await taskStateManager.setState(tab.id, {
         status: "running",
         message: "正在处理链接：" + tab.url,
@@ -69,20 +151,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         url: tab.url,
       });
       broadcastStatus(tab.id, "运行中...", "正在处理链接：" + tab.url);
+      broadcastProgress(tab.id, 0.1, "检测内容类型...");
 
       const settings = await loadSettings();
       console.log("[Background] Calling summarizeUrl...");
+      broadcastProgress(tab.id, 0.3, "获取内容...");
+
+      // 根据 summary_length 设置获取 max_tokens
+      const lengthConfig = getSummaryLengthConfig(settings.summary_length);
+      const maxOutputTokens = lengthConfig.max_tokens || settings.max_output_tokens || 8192;
+
       const options = {
         ...message?.options,
         preferredLanguages: settings.preferred_languages,
         useHttpDetection: settings.use_http_detection,
-        max_output_tokens: settings.max_output_tokens,
+        max_output_tokens: maxOutputTokens,
+        summary_length: settings.summary_length,  // 传递 summary_length 用于 prompt 修饰
         tabId: tab.id,  // Pass tabId for DOM parsing via scripting API
+        signal: controller.signal,  // Pass abort signal
       };
+      broadcastProgress(tab.id, 0.6, "生成摘要...");
       const result = await summarizeUrl(tab.url, settings, options);
       const text = result?.output_text || result?.summary || "";
 
       console.log("[Background] Summary completed successfully");
+      broadcastProgress(tab.id, 0.9, "处理完成...");
+
+      // Clean up AbortController
+      cleanupAbortController(tab.id);
+
       await taskStateManager.setState(tab.id, {
         status: "completed",
         message: text || "摘要完成",
@@ -94,8 +191,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // 自动保存摘要到本地
       if (settings.auto_save_summary && text) {
         try {
+          broadcastProgress(tab.id, 0.95, "保存文件...");
           const title = result?.metadata?.title || "";
-          const metadata = result?.metadata || {};
+          const metadata = { ...result?.metadata } || {};
+
+          // 添加 generatedAt 作为日期备选（与 CLI 一致）
+          const now = new Date();
+          metadata.generatedAt = now.toISOString().slice(0, 10);  // YYYY-MM-DD 格式
+
+          // 如果启用了 domain 推断，且 metadata 中没有 category，尝试从摘要内容推断
+          const shouldInferDomain = settings.infer_domain !== false;  // 默认启用
+          if (shouldInferDomain && !metadata.category && text) {
+            try {
+              const inferredDomain = await inferDomainFromSummary(text, settings);
+              if (inferredDomain) {
+                metadata.category = inferredDomain;
+                console.log("[Background] Inferred domain:", inferredDomain);
+              }
+            } catch (inferError) {
+              console.warn("[Background] Failed to infer domain:", inferError.message);
+            }
+          }
+
+          // 保存摘要文件
           await saveSummaryAsMarkdown(
             tab.url,
             text,
@@ -104,13 +222,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             metadata
           );
           console.log("[Background] Summary saved to local file");
+
+          // 如果启用了 timeline 保存，且有 segments 数据，同时保存 timeline 文件
+          const shouldSaveTimeline = settings.save_timeline !== false;  // 默认启用
+          const segments = result?.segments;
+          if (shouldSaveTimeline && segments && segments.length > 0) {
+            await saveTimelineAsMarkdown(
+              tab.url,
+              segments,
+              title,
+              settings.save_subdirectory || "any2summary",
+              metadata
+            );
+            console.log("[Background] Timeline saved to local file");
+          }
         } catch (saveError) {
           console.error("[Background] Failed to save summary:", saveError);
         }
       }
 
+      broadcastProgress(tab.id, 1.0, "完成");
       sendResponse({ ok: true, result });
     } catch (error) {
+      // Clean up AbortController
+      if (tab?.id) {
+        cleanupAbortController(tab.id);
+      }
+
+      // Check if this is an abort error
+      if (error.name === "AbortError") {
+        console.log("[Background] Task was cancelled");
+        sendResponse({ ok: false, error: "任务已取消", cancelled: true });
+        return;
+      }
+
       const messageText = error instanceof Error ? error.message : String(error);
       console.error("[Background] Error:", messageText);
       // Use tab.id if available, otherwise skip state update
@@ -137,14 +282,18 @@ chrome.commands.onCommand.addListener(async (command) => {
 
   console.log("[Background] Keyboard shortcut triggered: run-summary");
 
+  let tab;
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.url || !tab?.id) {
       console.error("[Background] Cannot get active tab URL or ID");
       return;
     }
 
     console.log("[Background] Processing URL via shortcut:", tab.url);
+
+    // Create AbortController for this task
+    const controller = createAbortController(tab.id);
 
     await taskStateManager.setState(tab.id, {
       status: "running",
@@ -155,17 +304,28 @@ chrome.commands.onCommand.addListener(async (command) => {
     broadcastStatus(tab.id, "运行中...", "快捷键触发，处理中：" + tab.url);
 
     const settings = await loadSettings();
-    console.log("[Background] Calling summarizeUrl...");
+    console.log("[Background] Calling summarizeUrl via shortcut...");
+
+    // 根据 summary_length 设置获取 max_tokens
+    const lengthConfig = getSummaryLengthConfig(settings.summary_length);
+    const maxOutputTokens = lengthConfig.max_tokens || settings.max_output_tokens || 8192;
+
     const options = {
       preferredLanguages: settings.preferred_languages,
       useHttpDetection: settings.use_http_detection,
-      max_output_tokens: settings.max_output_tokens,
+      max_output_tokens: maxOutputTokens,
+      summary_length: settings.summary_length,
       tabId: tab.id,  // Pass tabId for DOM parsing via scripting API
+      signal: controller.signal,  // Pass abort signal
     };
     const result = await summarizeUrl(tab.url, settings, options);
     const text = result?.output_text || result?.summary || "";
 
     console.log("[Background] Summary completed successfully");
+
+    // Clean up AbortController
+    cleanupAbortController(tab.id);
+
     await taskStateManager.setState(tab.id, {
       status: "completed",
       message: text || "摘要完成",
@@ -178,7 +338,27 @@ chrome.commands.onCommand.addListener(async (command) => {
     if (settings.auto_save_summary && text) {
       try {
         const title = result?.metadata?.title || "";
-        const metadata = result?.metadata || {};
+        const metadata = { ...result?.metadata } || {};
+
+        // 添加 generatedAt 作为日期备选（与 CLI 一致）
+        const now = new Date();
+        metadata.generatedAt = now.toISOString().slice(0, 10);  // YYYY-MM-DD 格式
+
+        // 如果启用了 domain 推断，且 metadata 中没有 category，尝试从摘要内容推断
+        const shouldInferDomain = settings.infer_domain !== false;
+        if (shouldInferDomain && !metadata.category && text) {
+          try {
+            const inferredDomain = await inferDomainFromSummary(text, settings);
+            if (inferredDomain) {
+              metadata.category = inferredDomain;
+              console.log("[Background] Inferred domain via shortcut:", inferredDomain);
+            }
+          } catch (inferError) {
+            console.warn("[Background] Failed to infer domain:", inferError.message);
+          }
+        }
+
+        // 保存摘要文件
         await saveSummaryAsMarkdown(
           tab.url,
           text,
@@ -187,11 +367,36 @@ chrome.commands.onCommand.addListener(async (command) => {
           metadata
         );
         console.log("[Background] Summary saved to local file");
+
+        // 如果启用了 timeline 保存，且有 segments 数据，同时保存 timeline 文件
+        const shouldSaveTimeline = settings.save_timeline !== false;
+        const segments = result?.segments;
+        if (shouldSaveTimeline && segments && segments.length > 0) {
+          await saveTimelineAsMarkdown(
+            tab.url,
+            segments,
+            title,
+            settings.save_subdirectory || "any2summary",
+            metadata
+          );
+          console.log("[Background] Timeline saved to local file");
+        }
       } catch (saveError) {
         console.error("[Background] Failed to save summary:", saveError);
       }
     }
   } catch (error) {
+    // Clean up AbortController
+    if (tab?.id) {
+      cleanupAbortController(tab.id);
+    }
+
+    // Check if this is an abort error
+    if (error.name === "AbortError") {
+      console.log("[Background] Task was cancelled via shortcut");
+      return;
+    }
+
     const messageText = error instanceof Error ? error.message : String(error);
     console.error("[Background] Error:", messageText);
     if (tab?.id) {

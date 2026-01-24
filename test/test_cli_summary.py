@@ -293,6 +293,7 @@ def test_run_with_azure_summary_outputs_summary(
         url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         return fake_bundle
 
@@ -370,6 +371,7 @@ def test_run_with_custom_summary_prompt_file(
         url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         captured_prompt["prompt"] = prompt
         return fake_bundle
@@ -431,6 +433,7 @@ def test_run_uses_default_summary_prompt_file_when_not_provided(
         url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         captured_prompt["prompt"] = prompt
         return fake_bundle

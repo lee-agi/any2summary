@@ -131,6 +131,8 @@ The script loads `.env` located in the same directory and calls `setup_and_run.s
 | --- | --- |
 | (default) | Run the main summarization pipeline |
 | `serve` | Start the local companion server for Chrome extension support |
+| `doctor` | Health check for dependencies and service connectivity |
+| `init` | Interactive configuration wizard for `.env` file setup |
 
 **`serve` options:**
 | Argument | Default | Description |
@@ -139,11 +141,24 @@ The script loads `.env` located in the same directory and calls `setup_and_run.s
 | `--port` | `8765` | Port to bind to |
 | `--reload` | Off | Enable auto-reload for development |
 
+**`doctor` command:**
+```bash
+any2summary doctor
+```
+Checks Python version, ffmpeg, yt-dlp, required packages, `.env` file, environment variables, Azure connectivity, and cache directory. Returns exit code 0 if all checks pass, 1 otherwise.
+
+**`init` command:**
+```bash
+any2summary init [--force]
+```
+Interactively prompts for Azure OpenAI credentials and generates a `.env` file. Use `--force` to overwrite an existing file without confirmation. Validates Azure connectivity after collecting credentials.
+
 ### Main Command Arguments
 
 | Argument | Type / Default | Required | Description | Typical Usage |
 | --- | --- | --- | --- | --- |
-| `--url` | String, comma-separated | ✔ | Video/audio/article URLs; processed concurrently in the given order | Batch caption/summary export |
+| `--url` | String, comma-separated | ✔* | Video/audio/article URLs; processed concurrently in the given order | Batch caption/summary export |
+| `--file` | Path | ✔* | Local audio/video/PDF file path (supports mp3/m4a/wav/mp4/mkv/webm/pdf) | Process local files directly |
 | `--language` | String, default `en` |  | Preferred language for captions/transcripts | Control transcript language |
 | `--fallback-language` | Repeatable |  | Extra language codes to try when the primary one is missing | Cross-language resilience |
 | `-V/--version` | Flag |  | Display version and exit | Verify installed version |
@@ -156,8 +171,12 @@ The script loads `.env` located in the same directory and calls `setup_and_run.s
 | `--known-speaker` | `name=path.wav`, repeatable |  | Provide reference audio clips to improve speaker labeling | Identify recurring hosts |
 | `--known-speaker-name` | String, repeatable |  | Supply speaker names without audio samples | Give Azure semantic hints |
 | `--clean-cache` | Flag |  | Remove cached artifacts for the current URL before processing | Force re-download/re-transcribe |
+| `--summary-length` | `brief`/`standard`/`detailed`/`full`, default `standard` |  | Control summary output detail level | Adjust output verbosity |
 
-> **Notes:** Article mode ignores `--summary-prompt-file` and `--force-azure-diarization` to ensure web pages always use the article-specific prompt. Conversely, Apple Podcasts and similar audio sources automatically fall back to the Azure pipeline even without `--force-azure-diarization`.
+> **Notes:**
+> - `--url` and `--file` are mutually exclusive; one must be provided (marked with ✔*).
+> - `--summary-length` options: `brief` (3-5 sentences, 2K tokens), `standard` (default, 8K tokens), `detailed` (expanded points, 16K tokens), `full` (complete translation, 32K tokens).
+> - Article mode ignores `--summary-prompt-file` and `--force-azure-diarization` to ensure web pages always use the article-specific prompt. Conversely, Apple Podcasts and similar audio sources automatically fall back to the Azure pipeline even without `--force-azure-diarization`.
 
 ## Environment Variables & Config
 
@@ -220,6 +239,34 @@ python -m any2summary.cli \
   --azure-summary
 ```
 - Each job prints a JSON block in the original order; failures are reported to stderr as `[URL] error message` without stopping remaining tasks.
+
+### 5. Local file processing
+```bash
+# Process local audio file
+any2summary --file ./podcast.mp3 --azure-summary --summary-length brief
+
+# Process local video file (extracts audio automatically)
+any2summary --file ./interview.mp4 --language zh --azure-summary
+
+# Process PDF document
+any2summary --file ./paper.pdf --azure-summary --summary-length detailed
+```
+- Supports audio (mp3/m4a/wav/flac/aac/ogg), video (mp4/mkv/webm/avi/mov), and PDF files.
+- Video files have audio extracted via ffmpeg before transcription.
+- PDF files use `pdfplumber` for text extraction (install via `pip install any2summary[pdf]`).
+- Cache is stored in `~/.cache/any2summary/file_<name>_<hash>/`.
+
+### 6. Quick setup with init and doctor
+```bash
+# Run health check to verify dependencies
+any2summary doctor
+
+# Configure Azure credentials interactively
+any2summary init
+
+# Verify configuration works
+any2summary doctor
+```
 
 ## Cache Layout
 - Default cache root: `~/.cache/any2summary/<host_or_id>/`, containing:

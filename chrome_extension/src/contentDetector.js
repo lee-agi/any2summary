@@ -188,10 +188,11 @@ export function shouldForceAzureTranscription(url) {
  * @param {string} url - The URL to detect content type for
  * @param {Object} options - Detection options
  * @param {boolean} options.useHttpDetection - Whether to use HTTP requests for detection
+ * @param {AbortSignal} [options.signal] - Optional abort signal
  * @returns {Promise<"video"|"audio"|"article">}
  */
 export async function detectContentType(url, options = {}) {
-  const { useHttpDetection = true } = options;
+  const { useHttpDetection = true, signal } = options;
 
   // Step 1: Check cache
   if (contentTypeCache.has(url)) {
@@ -262,12 +263,16 @@ export async function detectContentType(url, options = {}) {
   // Step 5-6: HTTP detection (optional)
   if (useHttpDetection) {
     try {
-      const result = await detectContentTypeViaHttp(url);
+      const result = await detectContentTypeViaHttp(url, signal);
       if (result) {
         contentTypeCache.set(url, result);
         return result;
       }
-    } catch {
+    } catch (error) {
+      // Re-throw abort errors
+      if (error.name === "AbortError") {
+        throw error;
+      }
       // HTTP detection failed, continue to fallback
     }
   }
@@ -286,14 +291,16 @@ export async function detectContentType(url, options = {}) {
 /**
  * Detect content type via HTTP requests (HEAD + partial HTML fetch).
  * @param {string} url
+ * @param {AbortSignal} [signal] - Optional abort signal
  * @returns {Promise<"video"|"audio"|null>}
  */
-async function detectContentTypeViaHttp(url) {
+async function detectContentTypeViaHttp(url, signal) {
   try {
     // Send HEAD request
     const headResponse = await fetch(url, {
       method: "HEAD",
       redirect: "follow",
+      signal,
     });
 
     const contentType = (headResponse.headers.get("content-type") || "").toLowerCase();
@@ -313,6 +320,7 @@ async function detectContentTypeViaHttp(url) {
           method: "GET",
           headers: { Range: "bytes=0-2047" },
           redirect: "follow",
+          signal,
         });
 
         const htmlContent = (await htmlResponse.text()).toLowerCase();

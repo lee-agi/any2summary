@@ -11,3 +11,4 @@ cookies.txt
 .env
 dist/
 .DS_Store
+worktree/

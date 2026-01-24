@@ -405,6 +405,45 @@
         </div>
       </div>
 
+      <!-- 摘要配置 -->
+      <div class="card">
+        <h2 class="card-title">摘要配置</h2>
+        <p class="card-description">
+          控制摘要输出的长度和详细程度。
+        </p>
+        <div class="form-group">
+          <label for="summaryLength">摘要长度</label>
+          <select id="summaryLength" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--border-radius); font-size: 14px; background: var(--card-bg);">
+            <option value="brief">简洁 (3-5句话)</option>
+            <option value="standard" selected>标准</option>
+            <option value="detailed">详细</option>
+            <option value="full">完整翻译</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- 语言偏好配置 -->
+      <div class="card">
+        <h2 class="card-title">语言偏好配置</h2>
+        <p class="card-description">
+          设置字幕/内容的首选语言顺序。
+        </p>
+        <div class="form-group">
+          <label for="preferredLanguage">首选语言</label>
+          <select id="preferredLanguage" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--border-radius); font-size: 14px; background: var(--card-bg);">
+            <option value="en">English</option>
+            <option value="zh-Hans">简体中文</option>
+            <option value="zh-Hant">繁体中文</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-top: 16px;">
+          <label for="fallbackLanguages">备选语言（逗号分隔）</label>
+          <input id="fallbackLanguages" type="text" placeholder="zh-Hans,zh-Hant,ja,ko" />
+        </div>
+      </div>
+
       <!-- 自动保存配置 -->
       <div class="card">
         <h2 class="card-title">自动保存配置</h2>
@@ -418,6 +457,26 @@
           </div>
           <label class="toggle-switch">
             <input type="checkbox" id="autoSaveSummary" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="toggle-group">
+          <div class="toggle-label">
+            <span class="toggle-title">保存时间线文件</span>
+            <span class="toggle-description">同时保存原始字幕时间线（视频/音频内容）</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="saveTimeline" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="toggle-group">
+          <div class="toggle-label">
+            <span class="toggle-title">自动推断领域标签</span>
+            <span class="toggle-description">从摘要内容推断 Domain 标签（需额外 API 调用）</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="inferDomain" />
             <span class="toggle-slider"></span>
           </label>
         </div>

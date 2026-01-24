@@ -22,19 +22,52 @@ async function initializePopup() {
 
   // 获取 DOM 元素
   const runButton = document.getElementById("run");
+  const cancelButton = document.getElementById("cancel");
   const statusEl = document.getElementById("status");
   const resultEl = document.getElementById("result");
+  const progressContainer = document.getElementById("progressContainer");
+  const progressBar = document.getElementById("progressBar");
+  const progressLabel = document.getElementById("progressLabel");
 
   // 检查 DOM 元素是否存在
-  if (!runButton || !statusEl || !resultEl) {
+  if (!runButton || !cancelButton || !statusEl || !resultEl) {
     console.error("[Popup] Critical DOM elements missing:", {
       runButton: !!runButton,
+      cancelButton: !!cancelButton,
       statusEl: !!statusEl,
       resultEl: !!resultEl,
     });
     return;
   }
   console.log("[Popup] DOM elements loaded successfully");
+
+  // 辅助函数：设置运行状态（切换按钮显示）
+  function setRunningState(isRunning) {
+    if (isRunning) {
+      runButton.style.display = "none";
+      cancelButton.style.display = "inline-flex";
+      if (progressContainer) {
+        progressContainer.classList.add("show");
+      }
+    } else {
+      runButton.style.display = "inline-flex";
+      cancelButton.style.display = "none";
+      runButton.disabled = false;
+      if (progressContainer) {
+        progressContainer.classList.remove("show");
+      }
+    }
+  }
+
+  // 辅助函数：更新进度条
+  function updateProgress(ratio, label) {
+    if (progressBar) {
+      progressBar.style.width = `${Math.round(ratio * 100)}%`;
+    }
+    if (progressLabel) {
+      progressLabel.textContent = label || "";
+    }
+  }
 
   // 辅助函数：设置状态
   function setStatus(text) {
@@ -65,6 +98,7 @@ async function initializePopup() {
 
     if (!state) {
       console.log("[Popup] restoreState: no saved state found for this tab");
+      setRunningState(false);
       return;
     }
 
@@ -73,23 +107,35 @@ async function initializePopup() {
       case "running":
         setStatus("运行中...");
         setResult(state.message || "正在处理中，请稍候...");
-        runButton.disabled = true;
+        setRunningState(true);
         break;
       case "completed":
         setStatus("完成");
         setResult(state.message);
-        runButton.disabled = false;
+        setRunningState(false);
         break;
       case "failed":
         setStatus("失败");
         setResult(state.message, true);
-        runButton.disabled = false;
+        setRunningState(false);
+        break;
+      case "cancelled":
+        setStatus("已取消");
+        setResult(state.message || "任务已取消");
+        setRunningState(false);
         break;
     }
   }
 
   // 监听来自 background 的状态更新消息（只处理当前 tab）
   chrome.runtime.onMessage.addListener((message) => {
+    // Handle progress updates
+    if (message?.type === "SUMMARY_PROGRESS") {
+      if (message.payload.tabId !== currentTabId) return;
+      updateProgress(message.payload.ratio, message.payload.label);
+      return;
+    }
+
     if (message?.type !== "SUMMARY_STATUS_UPDATE") {
       return;
     }
@@ -101,7 +147,10 @@ async function initializePopup() {
     console.log("[Popup] Received status update:", message.payload.status);
     setStatus(message.payload.status);
     setResult(message.payload.message || "", message.payload.isError);
-    runButton.disabled = message.payload.status === "运行中...";
+
+    // Update button state based on status
+    const isRunning = message.payload.status === "运行中...";
+    setRunningState(isRunning);
   });
 
   // 确保已配置 API Key
@@ -116,10 +165,10 @@ async function initializePopup() {
   // 恢复状态
   await restoreState();
 
-  // 绑定按钮点击事件
+  // 绑定运行按钮点击事件
   runButton.addEventListener("click", async () => {
     console.log("[Popup] Run button clicked");
-    runButton.disabled = true;
+    setRunningState(true);
     setStatus("运行中...");
     setResult("");
     broadcastStatus("运行中...", "正在请求 Azure/OpenAI");
@@ -127,6 +176,16 @@ async function initializePopup() {
     try {
       await ensureConfigured();
       const response = await chrome.runtime.sendMessage({ type: "RUN_SUMMARY", options: {} });
+
+      // Check if task was cancelled
+      if (response?.cancelled) {
+        console.log("[Popup] Task was cancelled");
+        setStatus("已取消");
+        setResult("任务已取消");
+        setRunningState(false);
+        return;
+      }
+
       if (!response?.ok) {
         throw new Error(response?.error || "未知错误");
       }
@@ -136,7 +195,7 @@ async function initializePopup() {
       const finalText = text || "未返回内容";
       setResult(finalText);
       setStatus("完成");
-      runButton.disabled = false;
+      setRunningState(false);
 
       broadcastStatus("完成", finalText);
 
@@ -152,7 +211,7 @@ async function initializePopup() {
       console.error("[Popup] Error:", message);
       setStatus("失败");
       setResult(message, true);
-      runButton.disabled = false;
+      setRunningState(false);
       broadcastStatus("失败", message, true);
       chrome.notifications.create({
         type: "basic",
@@ -161,6 +220,23 @@ async function initializePopup() {
         message: "摘要失败",
         contextMessage: message.slice(0, 80),
       });
+    }
+  });
+
+  // 绑定取消按钮点击事件
+  cancelButton.addEventListener("click", async () => {
+    console.log("[Popup] Cancel button clicked");
+    try {
+      await chrome.runtime.sendMessage({
+        type: "CANCEL_TASK",
+        tabId: currentTabId,
+      });
+      setStatus("已取消");
+      setResult("任务已取消");
+      setRunningState(false);
+      broadcastStatus("已取消", "任务已取消");
+    } catch (error) {
+      console.error("[Popup] Cancel error:", error);
     }
   });
 

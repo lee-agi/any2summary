@@ -220,6 +220,7 @@ def test_cli_processes_article_summary(
         video_url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         assert video_url == target_url
         assert segments == bundle["segments"]
@@ -480,6 +481,7 @@ def test_cli_article_custom_prompt_file(
         video_url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         assert prompt == custom_prompt_text
         return summary_payload
@@ -554,6 +556,7 @@ def test_cli_article_ignores_summary_prompt_file_for_articles(
         video_url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         assert prompt == cli._load_default_article_prompt()
         assert video_url == target_url
@@ -631,6 +634,7 @@ def test_cli_article_uses_default_article_prompt_file(
         video_url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         captured_prompt["prompt"] = prompt
         return summary_payload
@@ -707,6 +711,7 @@ def test_cli_article_disables_azure_diarization_when_article_detected(
         video_url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         assert prompt == cli._load_default_article_prompt()
         assert metadata == bundle["metadata"]
@@ -771,6 +776,7 @@ def test_cli_podcast_url_prefers_media_prompt(
         video_url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         assert prompt != cli._load_default_article_prompt()
         assert video_url == target_url

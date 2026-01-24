@@ -15,6 +15,7 @@ import { extractYouTubeVideoId } from "./contentDetector.js";
  * @param {string} url - YouTube 视频 URL
  * @param {string} serverUrl - 本地服务 URL
  * @param {Object} options - 选项
+ * @param {AbortSignal} [options.signal] - Optional abort signal
  * @returns {Promise<{segments: Array, metadata: Object}>}
  */
 async function fetchTranscriptViaLocalServer(url, serverUrl, options) {
@@ -23,7 +24,9 @@ async function fetchTranscriptViaLocalServer(url, serverUrl, options) {
     languages: (options.preferredLanguages || ["en", "zh-Hans", "zh-Hant"]).join(","),
   });
 
-  const response = await fetch(`${serverUrl}/api/youtube/transcript?${params}`);
+  const response = await fetch(`${serverUrl}/api/youtube/transcript?${params}`, {
+    signal: options.signal,
+  });
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`本地服务获取字幕失败: ${response.status} ${errorText}`);
@@ -40,6 +43,7 @@ async function fetchTranscriptViaLocalServer(url, serverUrl, options) {
  * @param {string[]} options.preferredLanguages - Preferred languages in order (default: ["en", "zh-Hans", "zh-Hant"])
  * @param {string} options.serverUrl - Local server URL (if local server is enabled)
  * @param {boolean} options.useLocalServer - Whether to use local server
+ * @param {AbortSignal} [options.signal] - Optional abort signal
  * @returns {Promise<{segments: Array<{start: number, end: number, text: string}>, metadata: Object}>}
  */
 export async function fetchYouTubeTranscript(url, options = {}) {
@@ -47,6 +51,7 @@ export async function fetchYouTubeTranscript(url, options = {}) {
     preferredLanguages = ["en", "zh-Hans", "zh-Hant", "ja", "ko"],
     serverUrl,
     useLocalServer,
+    signal,
   } = options;
 
   // 如果本地服务可用，优先使用（支持系统代理）
@@ -55,10 +60,15 @@ export async function fetchYouTubeTranscript(url, options = {}) {
       console.log("[YouTube] 尝试通过本地服务获取字幕（支持代理）");
       const result = await fetchTranscriptViaLocalServer(url, serverUrl, {
         preferredLanguages,
+        signal,
       });
       console.log("[YouTube] 本地服务获取成功");
       return result;
     } catch (error) {
+      // Re-throw abort errors immediately
+      if (error.name === "AbortError") {
+        throw error;
+      }
       console.warn("[YouTube] 本地服务获取失败，回退到直接 fetch:", error.message);
       // 继续尝试直接 fetch
     }
@@ -74,8 +84,11 @@ export async function fetchYouTubeTranscript(url, options = {}) {
   const pageUrl = `https://www.youtube.com/watch?v=${videoId}`;
   let pageResponse;
   try {
-    pageResponse = await fetch(pageUrl);
+    pageResponse = await fetch(pageUrl, { signal });
   } catch (fetchError) {
+    if (fetchError.name === "AbortError") {
+      throw fetchError;
+    }
     throw new Error(
       `无法访问 YouTube，请启用本地服务并配置系统代理: ${fetchError.message}`
     );
@@ -110,7 +123,7 @@ export async function fetchYouTubeTranscript(url, options = {}) {
 
   // Fetch transcript
   const transcriptUrl = selectedTrack.baseUrl;
-  const segments = await fetchTranscriptFromUrl(transcriptUrl);
+  const segments = await fetchTranscriptFromUrl(transcriptUrl, signal);
 
   return {
     segments,
@@ -221,9 +234,10 @@ function selectCaptionTrack(captionTracks, preferredLanguages) {
 /**
  * Fetch transcript from YouTube caption URL.
  * @param {string} url
+ * @param {AbortSignal} [signal] - Optional abort signal
  * @returns {Promise<Array<{start: number, end: number, text: string}>>}
  */
-async function fetchTranscriptFromUrl(url) {
+async function fetchTranscriptFromUrl(url, signal) {
   // Add fmt=json3 to get JSON format
   const jsonUrl = url.includes("fmt=")
     ? url.replace(/fmt=\w+/, "fmt=json3")
@@ -231,8 +245,11 @@ async function fetchTranscriptFromUrl(url) {
 
   let response;
   try {
-    response = await fetch(jsonUrl);
+    response = await fetch(jsonUrl, { signal });
   } catch (fetchError) {
+    if (fetchError.name === "AbortError") {
+      throw fetchError;
+    }
     throw new Error(
       `无法获取字幕，请启用本地服务并配置系统代理: ${fetchError.message}`
     );
