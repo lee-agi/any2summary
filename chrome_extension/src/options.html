@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>any2summary 设置</title>
+    <style>
+      :root {
+        --primary-color: #1a73e8;
+        --primary-hover: #1557b0;
+        --bg-color: #f8f9fa;
+        --card-bg: #ffffff;
+        --text-color: #202124;
+        --text-secondary: #5f6368;
+        --border-color: #dadce0;
+        --border-radius: 8px;
+        --shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+        --shadow-hover: 0 4px 6px rgba(0, 0, 0, 0.15);
+        --success-color: #34a853;
+        --error-color: #ea4335;
+        --warning-color: #fbbc04;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        background-color: var(--bg-color);
+        color: var(--text-color);
+        margin: 0;
+        padding: 24px;
+        line-height: 1.5;
+      }
+
+      .container {
+        max-width: 680px;
+        margin: 0 auto;
+      }
+
+      h1 {
+        font-size: 24px;
+        font-weight: 500;
+        margin-bottom: 24px;
+        color: var(--text-color);
+      }
+
+      /* Card 样式 */
+      .card {
+        background: var(--card-bg);
+        border-radius: var(--border-radius);
+        box-shadow: var(--shadow);
+        padding: 20px 24px;
+        margin-bottom: 16px;
+      }
+
+      .card-title {
+        font-size: 16px;
+        font-weight: 500;
+        color: var(--text-color);
+        margin: 0 0 16px 0;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      .card-description {
+        font-size: 13px;
+        color: var(--text-secondary);
+        margin-bottom: 16px;
+      }
+
+      /* 表单元素 */
+      .form-group {
+        margin-bottom: 16px;
+      }
+
+      .form-group:last-child {
+        margin-bottom: 0;
+      }
+
+      label {
+        display: block;
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-color);
+        margin-bottom: 6px;
+      }
+
+      input[type="text"],
+      input[type="password"],
+      input[type="number"] {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius);
+        font-size: 14px;
+        color: var(--text-color);
+        background: var(--card-bg);
+        transition: border-color 0.2s, box-shadow 0.2s;
+      }
+
+      input[type="text"]:focus,
+      input[type="password"]:focus,
+      input[type="number"]:focus {
+        outline: none;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+      }
+
+      input::placeholder {
+        color: var(--text-secondary);
+      }
+
+      /* 行布局 */
+      .row {
+        display: flex;
+        gap: 16px;
+      }
+
+      .row > .form-group {
+        flex: 1;
+      }
+
+      /* Toggle 开关样式 */
+      .toggle-group {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      .toggle-group:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+
+      .toggle-group:first-child {
+        padding-top: 0;
+      }
+
+      .toggle-label {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .toggle-title {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-color);
+      }
+
+      .toggle-description {
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+
+      /* Toggle switch */
+      .toggle-switch {
+        position: relative;
+        width: 48px;
+        height: 24px;
+        flex-shrink: 0;
+      }
+
+      .toggle-switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+
+      .toggle-slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: #ccc;
+        transition: 0.3s;
+        border-radius: 24px;
+      }
+
+      .toggle-slider:before {
+        position: absolute;
+        content: "";
+        height: 18px;
+        width: 18px;
+        left: 3px;
+        bottom: 3px;
+        background-color: white;
+        transition: 0.3s;
+        border-radius: 50%;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      }
+
+      .toggle-switch input:checked + .toggle-slider {
+        background-color: var(--primary-color);
+      }
+
+      .toggle-switch input:checked + .toggle-slider:before {
+        transform: translateX(24px);
+      }
+
+      /* 按钮样式 */
+      .btn {
+        padding: 10px 24px;
+        border-radius: var(--border-radius);
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s;
+        border: none;
+      }
+
+      .btn-primary {
+        background-color: var(--primary-color);
+        color: white;
+      }
+
+      .btn-primary:hover {
+        background-color: var(--primary-hover);
+        box-shadow: var(--shadow-hover);
+      }
+
+      .btn-secondary {
+        background-color: var(--card-bg);
+        color: var(--primary-color);
+        border: 1px solid var(--border-color);
+      }
+
+      .btn-secondary:hover {
+        background-color: var(--bg-color);
+      }
+
+      .btn-small {
+        padding: 6px 12px;
+        font-size: 12px;
+      }
+
+      /* 状态提示 */
+      .status-container {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 1000;
+      }
+
+      .toast {
+        background: var(--text-color);
+        color: white;
+        padding: 12px 24px;
+        border-radius: var(--border-radius);
+        box-shadow: var(--shadow-hover);
+        font-size: 14px;
+        opacity: 0;
+        transform: translateY(20px);
+        transition: all 0.3s;
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .toast.success {
+        background: var(--success-color);
+      }
+
+      .toast.error {
+        background: var(--error-color);
+      }
+
+      /* 服务器状态 */
+      .server-status {
+        font-size: 13px;
+        padding: 8px 12px;
+        border-radius: var(--border-radius);
+        background: var(--bg-color);
+        margin-top: 12px;
+      }
+
+      .server-status.success {
+        background: rgba(52, 168, 83, 0.1);
+        color: var(--success-color);
+      }
+
+      .server-status.error {
+        background: rgba(234, 67, 53, 0.1);
+        color: var(--error-color);
+      }
+
+      /* 保存按钮区域 */
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+        margin-top: 24px;
+      }
+
+      /* 响应式 */
+      @media (max-width: 480px) {
+        body {
+          padding: 16px;
+        }
+
+        .row {
+          flex-direction: column;
+          gap: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>any2summary 配置</h1>
+
+      <!-- API 配置 -->
+      <div class="card">
+        <h2 class="card-title">API 配置</h2>
+        <div class="form-group">
+          <label for="endpoint">Azure/OpenAI Endpoint</label>
+          <input id="endpoint" type="text" placeholder="https://region-001.openai.azure.com" />
+        </div>
+        <div class="row">
+          <div class="form-group">
+            <label for="apiVersion">API Version</label>
+            <input id="apiVersion" type="text" placeholder="2025-04-01-preview" />
+          </div>
+          <div class="form-group">
+            <label for="deployment">Deployment / Model</label>
+            <input id="deployment" type="text" placeholder="gpt-5.1-codex" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="apiKey">API Key</label>
+          <input id="apiKey" type="password" placeholder="sk-..." />
+        </div>
+        <div class="toggle-group">
+          <div class="toggle-label">
+            <span class="toggle-title">使用 Responses API</span>
+            <span class="toggle-description">启用新版 Responses API 格式</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="useResponses" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- 缓存设置 -->
+      <div class="card">
+        <h2 class="card-title">缓存设置</h2>
+        <div class="toggle-group">
+          <div class="toggle-label">
+            <span class="toggle-title">启用缓存</span>
+            <span class="toggle-description">缓存摘要结果，避免重复请求</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="cacheEnabled" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="row" style="margin-top: 16px;">
+          <div class="form-group">
+            <label for="cacheTtl">缓存 TTL (分钟)</label>
+            <input id="cacheTtl" type="number" min="1" placeholder="60" />
+          </div>
+          <div class="form-group">
+            <label for="cacheMax">缓存最多条目</label>
+            <input id="cacheMax" type="number" min="1" placeholder="50" />
+          </div>
+        </div>
+      </div>
+
+      <!-- 本地服务配置 -->
+      <div class="card">
+        <h2 class="card-title">本地服务配置</h2>
+        <p class="card-description">
+          启用后，视频/音频将通过本地服务进行转写。需要先运行 <code>any2summary serve</code>。
+        </p>
+        <p class="card-description" style="margin-top: 8px; padding: 10px; background: rgba(26, 115, 232, 0.1); border-radius: 6px;">
+          <strong>YouTube 代理支持：</strong>如果您所在地区无法直接访问 YouTube，启用本地服务后可通过系统代理获取字幕。
+          请确保已设置 <code>HTTP_PROXY</code> / <code>HTTPS_PROXY</code> 环境变量。
+        </p>
+        <div class="toggle-group">
+          <div class="toggle-label">
+            <span class="toggle-title">启用本地服务</span>
+            <span class="toggle-description">使用本地服务进行音频转写</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="localServerEnabled" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="form-group" style="margin-top: 16px;">
+          <label for="localServerUrl">本地服务 URL</label>
+          <input id="localServerUrl" type="text" placeholder="http://127.0.0.1:8765" />
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; margin-top: 12px;">
+          <button id="testServer" type="button" class="btn btn-secondary btn-small">测试连接</button>
+          <div id="serverStatus" class="server-status" style="display: none;"></div>
+        </div>
+      </div>
+
+      <!-- 自动保存配置 -->
+      <div class="card">
+        <h2 class="card-title">自动保存配置</h2>
+        <p class="card-description">
+          摘要完成后自动保存为 Markdown 文件到 Chrome 下载目录。
+        </p>
+        <div class="toggle-group">
+          <div class="toggle-label">
+            <span class="toggle-title">自动保存摘要</span>
+            <span class="toggle-description">摘要完成后自动保存到本地</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="autoSaveSummary" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="form-group" style="margin-top: 16px;">
+          <label for="saveSubdirectory">保存子目录</label>
+          <input id="saveSubdirectory" type="text" placeholder="any2summary" />
+        </div>
+      </div>
+
+      <!-- 保存按钮 -->
+      <div class="actions">
+        <button id="save" class="btn btn-primary">保存设置</button>
+      </div>
+    </div>
+
+    <!-- Toast 提示 -->
+    <div class="status-container">
+      <div id="toast" class="toast"></div>
+    </div>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

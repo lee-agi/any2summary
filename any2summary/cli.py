@@ -46,10 +46,14 @@ from typing import (
 from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
 
 try:  # pragma: no cover - optional dependency already required by openai
+    import httpx
     from httpx import RemoteProtocolError, ConnectError
+    _HTTPX_AVAILABLE = True
 except Exception:  # pragma: no cover - fallback when httpx missing
+    httpx = None  # type: ignore[assignment]
     RemoteProtocolError = None  # type: ignore[assignment]
     ConnectError = None  # type: ignore[assignment]
+    _HTTPX_AVAILABLE = False
 
 try:  # pragma: no cover - 可选依赖，覆盖 httpcore 直抛的协议错误
     from httpcore import RemoteProtocolError as CoreRemoteProtocolError
@@ -57,6 +61,13 @@ try:  # pragma: no cover - 可选依赖，覆盖 httpcore 直抛的协议错误
 except Exception:  # pragma: no cover - httpcore 未安装时忽略
     CoreRemoteProtocolError = None  # type: ignore[assignment]
     CoreConnectError = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - numpy for audio processing
+    import numpy as np
+    _NUMPY_AVAILABLE = True
+except ImportError:  # pragma: no cover - numpy not installed
+    np = None  # type: ignore[assignment]
+    _NUMPY_AVAILABLE = False
 
 
 DEFAULT_YTDLP_USER_AGENT = (
@@ -89,6 +100,25 @@ DEFAULT_ARTICLE_PROMPT_PATH = PROMPTS_ROOT / "article_prompt.txt"
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _create_azure_http_client() -> Optional["httpx.Client"]:
+    """Create an httpx client with proxy disabled for Azure OpenAI calls.
+
+    Azure OpenAI endpoints are directly accessible and should not go through
+    local proxy servers which may timeout during long audio transcription.
+
+    Returns:
+        httpx.Client configured with proxy=None and extended timeouts,
+        or None if httpx is not available.
+    """
+    if not _HTTPX_AVAILABLE or httpx is None:
+        return None
+    return httpx.Client(
+        proxy=None,  # Explicitly disable proxy for Azure endpoints
+        timeout=httpx.Timeout(600.0, connect=30.0),  # 10min timeout for large audio
+    )
+
 
 def _getenv(*keys: str) -> Optional[str]:
     """Return the first defined environment variable among keys."""
@@ -215,6 +245,9 @@ _FORCED_AUDIO_HOST_SUFFIXES = (
 )
 _MEDIA_PATH_EXTENSIONS = (".mp3", ".m4a", ".aac", ".wav", ".flac")
 
+# Cache for smart content type detection (URL -> content_type)
+_CONTENT_TYPE_CACHE: Dict[str, str] = {}
+
 
 SUMMARY_PROMPT = '''
 你是一个可以帮助用户完成AI相关文章翻译和总结的助手。
@@ -300,6 +333,68 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         Process exit code, 0 on success, non-zero on failure.
     """
 
+    # Check if first arg is a subcommand
+    args_list = list(argv) if argv is not None else sys.argv[1:]
+    if args_list and args_list[0] == "serve":
+        return _run_serve_command(args_list[1:])
+
+    # Default behavior: summarize command
+    return _run_summarize_command(argv)
+
+
+def _run_serve_command(argv: Sequence[str]) -> int:
+    """Run the companion server for Chrome extension support.
+
+    Args:
+        argv: Arguments for the serve subcommand.
+
+    Returns:
+        Process exit code.
+    """
+    parser = argparse.ArgumentParser(
+        prog="any2summary serve",
+        description="Start local companion server for Chrome extension audio transcription.",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind to (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port to bind to (default: 8765)",
+    )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable auto-reload for development",
+    )
+
+    args = parser.parse_args(argv)
+
+    try:
+        from any2summary.server import run_server
+        run_server(host=args.host, port=args.port, reload=args.reload)
+        return 0
+    except RuntimeError as exc:
+        sys.stderr.write(f"错误: {exc}\n")
+        return 1
+    except KeyboardInterrupt:
+        sys.stderr.write("\n服务器已停止\n")
+        return 0
+
+
+def _run_summarize_command(argv: Optional[Sequence[str]] = None) -> int:
+    """Run the main summarization command.
+
+    Args:
+        argv: Sequence of command line arguments.
+
+    Returns:
+        Process exit code.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Download YouTube captions, enrich with optional Azure OpenAI "
@@ -919,7 +1014,7 @@ def perform_azure_diarization(
 
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION") or "2025-03-01-preview"
+    azure_api_version = "2025-03-01-preview"
     deployment = (
         os.getenv("AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT")
         or "gpt-4o-transcribe-diarize"
@@ -979,6 +1074,7 @@ def perform_azure_diarization(
         api_key=azure_key,
         api_version=azure_api_version,
         azure_endpoint=azure_endpoint,
+        http_client=_create_azure_http_client(),
     )
     openai_module = sys.modules.get("openai")
     bad_request_error: Optional[type[BaseException]]
@@ -1066,77 +1162,91 @@ def perform_azure_diarization(
         )
         if segments_done >= index:
             continue
+        max_attempts = 2
+        attempt = 1
         stream_tokens = 0.0
+        while True:
+            stream_tokens = 0.0
+            try:
+                with open(segment_path, "rb") as audio_file:
+                    request_kwargs: MutableMapping[str, Any] = {
+                        "model": deployment,
+                        "file": audio_file,
+                        "response_format": "diarized_json",
+                        "language": language,
+                        "chunking_strategy": "auto" 
+                    }
+                    if request_known_names:
+                        request_kwargs["known_speaker_names"] = request_known_names
 
-        try:
-            with open(segment_path, "rb") as audio_file:
-                request_kwargs: MutableMapping[str, Any] = {
-                    "model": deployment,
-                    "file": audio_file,
-                    "response_format": "diarized_json",
-                    "language": language,
-                    "chunking_strategy": "auto" 
-                }
-                if request_known_names:
-                    request_kwargs["known_speaker_names"] = request_known_names
-
-                def _handle_stream_chunk(payload: MutableMapping[str, Any]) -> None:
-                    nonlocal stream_tokens
-                    tokens = _extract_usage_tokens(payload)
-                    if tokens is None:
-                        return
-                    stream_tokens = max(stream_tokens, float(tokens))
-                    ratio = _compute_progress_ratio(
-                        processed_duration,
-                        total_audio_duration,
-                        produced_tokens + stream_tokens,
-                        total_estimated_tokens,
-                        segments_done,
-                        total_segments,
-                    )
-                    _update_progress_bar(
-                        ratio,
-                        _format_progress_detail(
+                    def _handle_stream_chunk(payload: MutableMapping[str, Any]) -> None:
+                        nonlocal stream_tokens
+                        tokens = _extract_usage_tokens(payload)
+                        if tokens is None:
+                            return
+                        stream_tokens = max(stream_tokens, float(tokens))
+                        ratio = _compute_progress_ratio(
                             processed_duration,
                             total_audio_duration,
                             produced_tokens + stream_tokens,
                             total_estimated_tokens,
                             segments_done,
                             total_segments,
-                        ),
+                        )
+                        _update_progress_bar(
+                            ratio,
+                            _format_progress_detail(
+                                processed_duration,
+                                total_audio_duration,
+                                produced_tokens + stream_tokens,
+                                total_estimated_tokens,
+                                segments_done,
+                                total_segments,
+                            ),
+                        )
+
+                    response = client.audio.transcriptions.create(
+                        **request_kwargs, stream=streaming
                     )
+            except Exception as exc:  # pragma: no cover - depends on API behaviour
+                if (
+                    bad_request_error is not None
+                    and isinstance(exc, bad_request_error)
+                ):
+                    message = _extract_openai_error_message(exc)
+                    raise RuntimeError(
+                        "Azure OpenAI 调用失败："
+                        f"{message}。请尝试使用 --clean-cache 重新生成音频，并确认 ffmpeg 可用。"
+                    ) from exc
+                if _is_stream_transport_error(exc):
+                    _write_diarization_cache(
+                        checkpoint_path,
+                        {
+                            "speakers": aggregated_diarization,
+                            "transcript": aggregated_transcript,
+                            "segment_offset": segment_offset,
+                            "processed_duration": processed_duration,
+                            "produced_tokens": produced_tokens,
+                            "segments_done": segments_done,
+                        },
+                    )
+                    if attempt < max_attempts:
+                        _LOGGER.warning(
+                            "Azure diarization transport error on segment %d (attempt %d/%d): %s",
+                            index,
+                            attempt,
+                            max_attempts,
+                            exc,
+                        )
+                        attempt += 1
+                        continue
+                raise
 
-                response = client.audio.transcriptions.create(
-                    **request_kwargs, stream=streaming
-                )
-        except Exception as exc:  # pragma: no cover - depends on API behaviour
-            if (
-                bad_request_error is not None
-                and isinstance(exc, bad_request_error)
-            ):
-                message = _extract_openai_error_message(exc)
-                raise RuntimeError(
-                    "Azure OpenAI 调用失败："
-                    f"{message}。请尝试使用 --clean-cache 重新生成音频，并确认 ffmpeg 可用。"
-                ) from exc
-            if _is_stream_transport_error(exc):
-                _write_diarization_cache(
-                    checkpoint_path,
-                    {
-                        "speakers": aggregated_diarization,
-                        "transcript": aggregated_transcript,
-                        "segment_offset": segment_offset,
-                        "processed_duration": processed_duration,
-                        "produced_tokens": produced_tokens,
-                        "segments_done": segments_done,
-                    },
-                )
-            raise
-
-        response_payload = _consume_transcription_response(
-            response,
-            on_chunk=_handle_stream_chunk if streaming else None,
-        )
+            response_payload = _consume_transcription_response(
+                response,
+                on_chunk=_handle_stream_chunk if streaming else None,
+            )
+            break
         if not streaming:
             ratio = _compute_progress_ratio(
                 processed_duration,
@@ -2043,6 +2153,7 @@ def generate_translation_summary(
             api_key=azure_key,
             api_version=summary_api_version,
             azure_endpoint=azure_endpoint,
+            http_client=_create_azure_http_client(),
         )
 
         response = client.chat.completions.create(
@@ -2170,6 +2281,7 @@ def _infer_domain_from_summary(raw_summary: str) -> Optional[str]:
                 api_key=azure_key,
                 api_version=summary_api_version,
                 azure_endpoint=azure_endpoint,
+                http_client=_create_azure_http_client(),
             )
             response = client.chat.completions.create(
                 model=deployment,
@@ -3199,7 +3311,8 @@ def _ensure_audio_segments(wav_path: str) -> List[str]:
     if not needs_split:
         return [wav_path]
 
-    return _split_wav_file(wav_path, directory, base_name)
+    # Use smart splitting if numpy is available, otherwise fallback to regular split
+    return _split_wav_file_smart(wav_path, directory, base_name)
 
 
 def _list_existing_segments(directory: str, base_name: str) -> List[str]:
@@ -3219,6 +3332,247 @@ def _list_existing_segments(directory: str, base_name: str) -> List[str]:
         if os.path.isfile(path):
             segments.append(path)
     return segments
+
+
+def _find_silence_boundary(
+    wav_path: str, target_seconds: float, window_seconds: float = 30.0
+) -> float:
+    """Find silence boundary near target time point for smart audio splitting.
+
+    Searches for the longest silence interval within a window around the target
+    time point. This helps avoid cutting in the middle of sentences or words.
+
+    Args:
+        wav_path: Path to WAV file
+        target_seconds: Target split time in seconds
+        window_seconds: Search window size (±window/2 around target)
+
+    Returns:
+        Optimal split time in seconds (silence midpoint, or target if no silence found)
+    """
+    if not _NUMPY_AVAILABLE or np is None:
+        # Fallback to target if numpy not available
+        return target_seconds
+
+    try:
+        with wave.open(wav_path, "rb") as wf:
+            frame_rate = wf.getframerate()
+            if frame_rate <= 0:
+                return target_seconds
+
+            total_frames = wf.getnframes()
+            total_duration = total_frames / frame_rate
+
+            # Clamp target to valid range
+            target_seconds = max(0.0, min(target_seconds, total_duration))
+
+            # Calculate window boundaries
+            window_start = max(0.0, target_seconds - window_seconds / 2)
+            window_end = min(total_duration, target_seconds + window_seconds / 2)
+
+            # Read audio data in window
+            start_frame = int(window_start * frame_rate)
+            end_frame = int(window_end * frame_rate)
+            frames_to_read = end_frame - start_frame
+
+            if frames_to_read <= 0:
+                return target_seconds
+
+            wf.setpos(start_frame)
+            frame_data = wf.readframes(frames_to_read)
+
+            # Convert to numpy array
+            sample_width = wf.getsampwidth()
+            if sample_width == 1:
+                dtype = np.uint8
+            elif sample_width == 2:
+                dtype = np.int16
+            else:
+                # Unsupported sample width
+                return target_seconds
+
+            audio_array = np.frombuffer(frame_data, dtype=dtype)
+
+            # Calculate RMS energy in 100ms chunks
+            chunk_size = max(1, frame_rate // 10)  # 100ms chunks
+            num_chunks = len(audio_array) // chunk_size
+
+            if num_chunks == 0:
+                return target_seconds
+
+            energies = []
+            for i in range(num_chunks):
+                chunk_start = i * chunk_size
+                chunk_end = min(chunk_start + chunk_size, len(audio_array))
+                chunk = audio_array[chunk_start:chunk_end].astype(np.float32)
+                rms = float(np.sqrt(np.mean(chunk**2)))
+                energies.append(rms)
+
+            if not energies:
+                return target_seconds
+
+            # Find silence threshold (10th percentile of energy)
+            silence_threshold = float(np.percentile(energies, 10))
+
+            # Find longest silence interval
+            longest_silence_start = 0
+            longest_silence_duration = 0
+            current_silence_start = None
+
+            for i, energy in enumerate(energies):
+                if energy < silence_threshold:
+                    if current_silence_start is None:
+                        current_silence_start = i
+                else:
+                    if current_silence_start is not None:
+                        duration = i - current_silence_start
+                        if duration > longest_silence_duration:
+                            longest_silence_duration = duration
+                            longest_silence_start = current_silence_start
+                        current_silence_start = None
+
+            # Check if final silence extends to end
+            if current_silence_start is not None:
+                duration = num_chunks - current_silence_start
+                if duration > longest_silence_duration:
+                    longest_silence_duration = duration
+                    longest_silence_start = current_silence_start
+
+            # If no significant silence found, return target
+            if longest_silence_duration == 0:
+                return target_seconds
+
+            # Calculate silence midpoint time
+            silence_midpoint_chunk = longest_silence_start + longest_silence_duration / 2
+            silence_time = window_start + (silence_midpoint_chunk * chunk_size) / frame_rate
+
+            # Clamp to valid range
+            return max(0.0, min(silence_time, total_duration))
+
+    except Exception:
+        # Any error, fallback to target
+        return target_seconds
+
+
+def _split_wav_file_smart(
+    wav_path: str, directory: str, base_name: str
+) -> List[str]:
+    """Split WAV file at silence boundaries for better audio quality.
+
+    Uses silence detection to find natural break points instead of cutting
+    at fixed time intervals. Falls back to regular splitting if numpy unavailable.
+
+    Args:
+        wav_path: Path to input WAV file
+        directory: Output directory for segments
+        base_name: Base name for output files
+
+    Returns:
+        List of paths to output segment files
+    """
+    # Fallback to regular split if numpy not available
+    if not _NUMPY_AVAILABLE or np is None:
+        return _split_wav_file(wav_path, directory, base_name)
+
+    segment_paths: List[str] = []
+
+    # Create output directory if needed
+    os.makedirs(directory, exist_ok=True)
+
+    try:
+        with wave.open(wav_path, "rb") as source:
+            params = source.getparams()
+            frame_rate = source.getframerate() or 16000
+            total_frames = source.getnframes()
+            total_duration = total_frames / frame_rate
+
+            # Check if splitting is actually needed
+            if total_duration <= AUDIO_SEGMENT_SECONDS:
+                # Audio is short enough, no splitting needed
+                return [wav_path]
+
+            # Calculate split points using silence detection
+            split_points = []
+            current_target = AUDIO_SEGMENT_SECONDS
+
+            while current_target < total_duration:
+                # Find optimal boundary near target
+                optimal_point = _find_silence_boundary(
+                    wav_path, current_target, window_seconds=30.0
+                )
+                split_points.append(optimal_point)
+
+                # Next target is optimal_point + segment_length
+                current_target = optimal_point + AUDIO_SEGMENT_SECONDS
+
+            # Create segments based on split points
+            segment_index = 0
+            current_start_frame = 0
+
+            for split_time in split_points:
+                segment_index += 1
+                split_frame = int(split_time * frame_rate)
+
+                # Create segment file
+                segment_path = os.path.join(
+                    directory, f"{base_name}_part{segment_index:03d}.wav"
+                )
+
+                with wave.open(segment_path, "wb") as destination:
+                    destination.setparams(params)
+
+                    # Read and write frames
+                    source.setpos(current_start_frame)
+                    frames_to_write = split_frame - current_start_frame
+
+                    frames_per_chunk = max(WAV_FRAME_CHUNK_SIZE, frame_rate)
+                    written = 0
+
+                    while written < frames_to_write:
+                        frames_to_read = min(frames_per_chunk, frames_to_write - written)
+                        frame_bytes = source.readframes(frames_to_read)
+                        if not frame_bytes:
+                            break
+                        destination.writeframes(frame_bytes)
+                        written += len(frame_bytes) // (params.sampwidth * params.nchannels)
+
+                if os.path.exists(segment_path) and os.path.getsize(segment_path) > 0:
+                    segment_paths.append(segment_path)
+
+                current_start_frame = split_frame
+
+            # Write final segment
+            segment_index += 1
+            segment_path = os.path.join(
+                directory, f"{base_name}_part{segment_index:03d}.wav"
+            )
+
+            with wave.open(segment_path, "wb") as destination:
+                destination.setparams(params)
+                source.setpos(current_start_frame)
+
+                frames_remaining = total_frames - current_start_frame
+                frames_per_chunk = max(WAV_FRAME_CHUNK_SIZE, frame_rate)
+
+                while frames_remaining > 0:
+                    frames_to_read = min(frames_per_chunk, frames_remaining)
+                    frame_bytes = source.readframes(frames_to_read)
+                    if not frame_bytes:
+                        break
+                    destination.writeframes(frame_bytes)
+                    frames_remaining -= len(frame_bytes) // (params.sampwidth * params.nchannels)
+
+            if os.path.exists(segment_path) and os.path.getsize(segment_path) > 0:
+                segment_paths.append(segment_path)
+
+            if not segment_paths:
+                return [wav_path]
+
+    except (OSError, wave.Error):
+        # Fallback to regular split on error
+        return _split_wav_file(wav_path, directory, base_name)
+
+    return segment_paths
 
 
 def _split_wav_file(
@@ -3441,8 +3795,15 @@ def _is_stream_transport_error(exc: BaseException) -> bool:
     try:
         import httpx
     except Exception:  # pragma: no cover - 可选依赖
+        httpx = None  # type: ignore[assignment]
+    if httpx is not None and isinstance(exc, httpx.TimeoutException):
+        return True
+    # OpenAI SDK wraps transport errors in APIConnectionError
+    try:
+        import openai
+    except Exception:  # pragma: no cover - 可选依赖
         return False
-    return isinstance(exc, httpx.TimeoutException)
+    return isinstance(exc, openai.APIConnectionError)
 
 
 def _consume_transcription_response(
@@ -3562,10 +3923,166 @@ def _is_media_source_url(video_url: str) -> bool:
     return False
 
 
-def _is_probable_article_url(video_url: str) -> bool:
-    """Heuristically determine whether a URL points to a webpage article."""
+def _smart_detect_content_type(url: str) -> str:
+    """Intelligently detect content type (video/audio/article) from URL.
 
-    return not _is_media_source_url(video_url)
+    Detection strategy (in order):
+    1. Check cache for previous results
+    2. Check URL file extension (.mp4, .mp3, etc.)
+    3. Check for embed/player/watch keywords in URL
+    4. Send HTTP HEAD request to check Content-Type header
+    5. Fetch first 1KB of HTML to check meta tags and video/audio elements
+    6. Fallback to existing white list logic (_is_media_source_url)
+
+    Args:
+        url: The URL to detect content type for
+
+    Returns:
+        "video", "audio", or "article"
+    """
+    # Step 1: Check cache
+    if url in _CONTENT_TYPE_CACHE:
+        return _CONTENT_TYPE_CACHE[url]
+
+    # Step 2: Check file extension
+    url_lower = url.lower()
+    if url_lower.endswith((".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv")):
+        _CONTENT_TYPE_CACHE[url] = "video"
+        return "video"
+
+    # Detect audio files separately
+    if url_lower.endswith((".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg")):
+        _CONTENT_TYPE_CACHE[url] = "audio"
+        return "audio"
+
+    # Step 3: Check for embed/player/watch keywords
+    parsed = urlparse(url)
+    path_lower = parsed.path.lower()
+    if any(keyword in path_lower for keyword in ["embed", "player", "watch"]):
+        _CONTENT_TYPE_CACHE[url] = "video"
+        return "video"
+
+    # Step 3.5: Check for known video/social media platforms
+    hostname = (parsed.hostname or "").lower()
+
+    # First, check for article paths that should NOT be treated as video
+    article_path_indicators = [
+        ("bilibili.com", ["/read/"]),  # Bilibili articles
+    ]
+
+    is_article_path = False
+    for platform_host, article_patterns in article_path_indicators:
+        if hostname.endswith(platform_host):
+            if any(pattern in path_lower for pattern in article_patterns):
+                # This is an article path, not video - skip video detection
+                is_article_path = True
+                break
+
+    # If not an article path, check for video platforms
+    if not is_article_path:
+        video_platform_indicators = [
+            # Short video platforms
+            ("tiktok.com", ["/video/", "/@"]),
+            ("douyin.com", ["/video/"]),
+            # Instagram
+            ("instagram.com", ["/reel/", "/tv/", "/p/"]),
+            # Xiaohongshu (Little Red Book)
+            ("xiaohongshu.com", ["/explore/", "/video/"]),
+            ("xhslink.com", ["/"]),
+            # Other platforms
+            ("vimeo.com", ["/"]),
+            ("dailymotion.com", ["/video/"]),
+            ("twitch.tv", ["/"]),
+            ("kick.com", ["/"]),
+        ]
+
+        for platform_host, path_patterns in video_platform_indicators:
+            if hostname.endswith(platform_host):
+                # Check if path matches any pattern, or if no patterns specified
+                if not path_patterns or any(pattern in path_lower for pattern in path_patterns):
+                    _CONTENT_TYPE_CACHE[url] = "video"
+                    return "video"
+
+    # Step 4-5: HTTP detection (only if httpx is available)
+    if _HTTPX_AVAILABLE and httpx is not None:
+        try:
+            # Send HEAD request with timeout
+            head_response = httpx.head(
+                url,
+                follow_redirects=True,
+                timeout=5.0,
+            )
+
+            # Check Content-Type header
+            content_type = head_response.headers.get("content-type", "").lower()
+
+            if "video/" in content_type:
+                _CONTENT_TYPE_CACHE[url] = "video"
+                return "video"
+
+            if "audio/" in content_type:
+                _CONTENT_TYPE_CACHE[url] = "audio"
+                return "audio"
+
+            # If HTML, fetch first 1KB to check meta tags
+            if "text/html" in content_type:
+                try:
+                    # Fetch first 1KB only
+                    partial_response = httpx.get(
+                        url,
+                        headers={"Range": "bytes=0-1023"},
+                        follow_redirects=True,
+                        timeout=5.0,
+                    )
+                    html_content = partial_response.text.lower()
+
+                    # Check OpenGraph meta tag
+                    if 'property="og:type"' in html_content and 'content="video' in html_content:
+                        _CONTENT_TYPE_CACHE[url] = "video"
+                        return "video"
+
+                    # Check Twitter Card meta tag
+                    if 'name="twitter:card"' in html_content and 'content="player"' in html_content:
+                        _CONTENT_TYPE_CACHE[url] = "video"
+                        return "video"
+
+                    # Check for <video> or <audio> tags
+                    if "<video" in html_content or "<audio" in html_content:
+                        _CONTENT_TYPE_CACHE[url] = "video"
+                        return "video"
+
+                except Exception:
+                    # Failed to fetch HTML, continue to fallback
+                    pass
+
+        except Exception:
+            # HTTP request failed, continue to fallback
+            pass
+
+    # Step 6: Fallback to existing white list logic
+    if _is_media_source_url(url):
+        _CONTENT_TYPE_CACHE[url] = "video"
+        return "video"
+
+    # Default to article
+    _CONTENT_TYPE_CACHE[url] = "article"
+    return "article"
+
+
+def _is_probable_article_url(video_url: str) -> bool:
+    """Heuristically determine whether a URL points to a webpage article.
+
+    Uses smart content type detection to identify video/audio vs article URLs.
+    Both video and audio content are considered non-article (media) sources.
+    """
+    # Disable smart detection if environment variable is set
+    if os.getenv("ANY2SUMMARY_DISABLE_SMART_DETECTION"):
+        return not _is_media_source_url(video_url)
+
+    content_type = _smart_detect_content_type(video_url)
+    # Only article content type is considered an article
+    # Video and audio both require media processing (diarization)
+    return content_type == "article"
 
 
 def _should_force_azure_transcription(video_url: str) -> bool:

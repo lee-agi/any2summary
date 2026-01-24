@@ -1,0 +1,300 @@
+# Decision Log
+
+## 2026-01-21: Chrome 插件按钮样式选择
+
+**Decision:** 选择 Material Design 风格美化按钮
+
+**Why:** 用户偏好 Google 设计语言，扁平化 + 波纹效果更简洁大方
+
+**Alternatives:**
+- 现代渐变风格：渐变背景、圆角、阴影，颜色丰富
+- 简约毛玻璃风格：半透明背景 + blur 效果，Apple 风格
+
+**Consequences:**
+- 按钮使用蓝色主题 (#1976d2)，与 Chrome 浏览器风格协调
+- 添加了 hover/active 状态动效和阴影变化
+- 增加了文档图标提升视觉识别度
+
+---
+
+## 2026-01-21: 修复 sessionStorage Bug
+
+**Decision:** 将 sessionStorage 替换为 chrome.storage.session API
+
+**Why:** Service Worker 环境中不存在 sessionStorage API，会导致运行时错误
+
+**Alternatives:**
+- 完全移除缓存功能
+- 使用 chrome.storage.local（持久化，非会话级别）
+
+**Consequences:**
+- 缓存功能在 Manifest V3 Service Worker 中正常工作
+- 添加了 try-catch 兼容非 Chrome 环境
+
+---
+
+## 2026-01-22: Popup 状态持久化方案
+
+**Decision:** 使用 `chrome.storage.session` 持久化任务状态，Popup 打开时自动恢复
+
+**Why:**
+- Popup 关闭后 DOM 销毁，状态丢失，用户无法查看执行进度
+- 使用 `chrome.storage.session` 保持会话级别持久化，浏览器关闭自动清理
+- 最小化代码改动，风险最低
+
+**Alternatives:**
+- 方案 B：添加完整的历史记录功能（成本高，当前不需要）
+- 方案 C：重构为 Background 中心化状态管理（架构改动大）
+- 不修复：依赖 SidePanel 查看状态（用户体验差）
+
+**Consequences:**
+- Popup 重新打开时能看到 running/completed/failed 状态
+- running 状态时按钮自动禁用，防止重复点击
+- 所有状态管理函数添加 try-catch，兼容非扩展环境测试
+- 修改文件：`storage.js`, `background.js`, `popup.js`, `sidepanel.js`
+
+---
+
+## 2026-01-22: CLI 优化方案选择
+
+**Decision:** 采用 **A1(智能内容嗅探器) + B1(智能边界检测 + 动态长度调整)**
+
+**Why:**
+- **URL误判**: 现有白名单策略导致新平台(TikTok、小红书等)被误判为文章,需要手动 `--force-azure-diarization`
+- **音频切分**: 固定1400秒切分导致句子被切断(~15%),说话人标签不连贯
+- **智能内容嗅探(A1)**: 通过HTTP响应头和HTML元标签自动检测,无需维护白名单,准确率从~70%提升至>95%
+- **智能边界检测(B1)**: 在静音处切分,减少句子切断至<3%
+- **动态长度调整(用户额外需求)**: 根据Azure API实际耗时(避免超时)和转写质量(说话人分离准确度)动态调整切分长度,自适应优化
+
+**Alternatives:**
+- **A2(扩展白名单)**: 手动扩充平台列表,治标不治本,维护成本高
+- **A3(显式类型参数)**: 添加 `--content-type` CLI参数,增加用户负担,与现有参数功能重叠
+- **B2(重叠切分)**: 分段间30秒重叠,Azure成本增加~20%,去重逻辑复杂
+- **B3(动态阈值)**: 仅优化说话人合并,不解决切分问题,治标不治本
+
+**Consequences:**
+- **依赖**: 添加 `numpy` 用于音频能量分析(已获用户同意)
+- **性能指标**: 本地存储 `~/.any2summary/azure_metrics.json`,使用EMA平滑历史数据
+- **动态调整策略**:
+  - 处理时长 > 90s → 缩短20%
+  - 处理时长 < 30s → 增加20%
+  - 错误率 > 5% → 缩短30%
+  - 范围限制: [600s, 1400s]
+- **预期效果**:
+  - URL误判率: 从~30%降至<5%
+  - 句子切断率: 从~15%降至<3%
+  - Azure API超时率: 从~5%降至<1%
+  - 转写质量: 错误率降低约20%
+- **实施顺序**:
+  1. Phase 1: A1 智能内容嗅探
+  2. Phase 2: B1 基础版(智能边界检测)
+  3. Phase 3: B1 增强版(动态长度调整)
+- **修改文件**: `cli.py`(新增~440行,修改~80行), 新增3个测试文件(~500行)
+- **风险缓解**: 添加超时和错误处理,网络失败时回退到现有白名单逻辑;性能指标缓存失败不影响核心功能
+
+---
+
+## 2026-01-22: Chrome 插件状态丢失修复 - DOM 加载时序问题
+
+**Decision:** 使用 `DOMContentLoaded` + `document.readyState` 双重保险确保 DOM 就绪
+
+**Why:**
+- 之前的状态持久化代码在模块顶层直接调用 `restoreState()`，但没有等待 DOM 加载完成
+- `statusEl` 和 `resultEl` 通过 `getElementById` 获取，但此时 DOM 可能未构建完成
+- 导致这些变量为 `null`，后续的状态恢复操作失败（静默失败）
+
+**Alternatives:**
+- 选项 B：仅使用 `DOMContentLoaded` 事件监听（如果脚本加载慢，DOM 可能已经 ready 了，事件不会触发）
+- 选项 C：将脚本移到 HTML 底部，使用 `defer` 属性（需要修改 HTML 文件，改动范围更大）
+
+**Consequences:**
+- `popup.js` 和 `sidepanel.js` 重构为初始化函数模式
+- 所有 DOM 操作代码包装在 `initializePopup()` / `initializeSidePanel()` 函数中
+- 添加 DOM 元素存在性检查，防止 null 引用错误
+- 增强所有模块的日志输出（带 `[Popup]`/`[SidePanel]`/`[Storage]`/`[Background]` 前缀），便于调试
+- 修改文件：`popup.js`、`sidepanel.js`、`storage.js`、`background.js`
+
+---
+
+## 2026-01-23: Chrome 插件状态丢失修复 - 改用 Local Storage
+
+**Decision:** 使用 `chrome.storage.local` 代替 `chrome.storage.session`，并添加过期检查机制
+
+**Why:**
+- `chrome.storage.session` 的 `setAccessLevel` 方案在实际测试中仍然无法解决跨上下文共享问题
+- `chrome.storage.local` 是更可靠的跨上下文存储方案
+- 虽然 local storage 会持久化，但通过 timestamp 过期检查可以模拟会话级别行为
+
+**Alternatives:**
+- 继续尝试 `setAccessLevel` 的不同配置（不稳定，Chrome 版本兼容性问题）
+- 使用 IndexedDB（过于复杂，不值得）
+
+**Consequences:**
+- `storage.js` 中将 `chrome.storage.session` 改为 `chrome.storage.local`
+- 添加 30 分钟过期检查：非 running 状态超过 30 分钟自动清除
+- running 状态不会过期，确保长时间运行的任务状态不丢失
+- 移除 `background.js` 中不再需要的 `setAccessLevel` 调用
+
+---
+
+## 2026-01-23: Azure OpenAI Responses API Endpoint 格式修复
+
+**Decision:** 修复 Responses API 使用正确的 `/openai/v1/responses` endpoint 格式
+
+**Why:**
+- Azure OpenAI Responses API (Azure AI Foundry) 使用不同于传统 Chat Completions API 的 endpoint 格式
+- 旧格式 `/openai/deployments/{deployment}/responses` 返回 404 错误
+- 正确格式是 `/openai/v1/responses`，model 在 request body 中指定
+
+**Alternatives:**
+- 方案 A：关闭 Responses API，使用传统的 Chat Completions API（最简单但放弃新 API）
+- 方案 C：两者都支持，让用户选择（改动较大）
+
+**Consequences:**
+- `summarize.js` 中的 `buildUrl` 函数现在为 Responses API 生成 `/openai/v1/responses` 路径
+- API 版本更新为 `2025-04-01-preview`（Azure 官方文档推荐版本）
+- Chat Completions API 路径保持不变：`/openai/deployments/{deployment}/chat/completions`
+- 测试用例更新以验证正确的 endpoint 格式
+- 参考文档：https://github.com/microsoftdocs/azure-ai-docs/blob/main/articles/ai-foundry/openai/latest.md
+
+---
+
+## 2026-01-23: Responses API 格式修复 - 对齐 cli.py 实现
+
+**Decision:** 移除 api-version 参数，修改 input 为数组格式，与 cli.py 完全一致
+
+**Why:**
+- 前次修复后仍报错 `API version not supported`（400 错误）
+- cli.py 使用 OpenAI SDK 调用 Responses API，不添加 api-version 参数
+- cli.py 的 input 格式是数组：`[{ role: "user", content: [{ type: "input_text", text: "..." }] }]`
+
+**Alternatives:**
+- 尝试不同的 api-version 值（不确定哪个值有效）
+- 放弃 Responses API，使用 Chat Completions API（简单但放弃新功能）
+
+**Consequences:**
+- `buildUrl()`: Responses API 直接返回 URL，不添加 api-version 查询参数
+- `buildBody()`: input 格式改为数组，包含 role 和 content 对象
+- 请求格式现在完全匹配 cli.py 的调用方式
+- 修改文件：`summarize.js`、`test_summarize_js_request_body.py`
+
+---
+
+## 2026-01-23: Chrome 扩展完整功能重构 - JavaScript 重写
+
+**Decision:** 用 JavaScript 重写 cli.py 核心功能，使 Chrome 扩展具备完整的 any2summary 能力
+
+**Why:**
+- 用户需要 Chrome 扩展具备 cli.py 的完整功能
+- Chrome 扩展无法直接运行 Python/ffmpeg/yt_dlp
+- JavaScript 重写可实现完全独立的前端应用
+
+**Alternatives:**
+- 方案 A：本地 HTTP 服务（扩展调用本地 Python 后端，需用户运行服务）
+- 方案 C：云端 API 服务（需要服务器成本）
+
+**Consequences:**
+- 新增 4 个 JavaScript 模块，移植自 cli.py：
+  1. `contentDetector.js` - 智能内容类型检测（视频/音频/文章）
+  2. `youtubeTranscript.js` - YouTube 字幕获取（解析 ytInitialPlayerResponse）
+  3. `articleParser.js` - 文章内容提取（HTML 解析）
+  4. `prompts.js` - Prompt 模板管理（视频/文章不同模板）
+- 重构 `summarize.js` 整合所有模块，支持：
+  - YouTube 视频：自动获取字幕 + AI 总结
+  - 网页文章：HTML 解析 + AI 总结
+  - 通用 URL：直接 AI 总结（fallback）
+- 更新 `default_settings.json` 添加新配置项：
+  - `preferred_languages`: 字幕语言偏好
+  - `auto_detect_content_type`: 自动检测内容类型
+  - `use_http_detection`: 使用 HTTP 请求检测
+  - `max_output_tokens`: 最大输出 token 数
+- 新增测试文件：`test_chrome_extension_modules.py`（14 个测试用例）
+- 限制：音频转写（非 YouTube）仍需后端支持（浏览器无法运行 ffmpeg）
+
+---
+
+## 2026-01-23: Chrome 扩展音频转写 - Companion Server 方案
+
+**Decision:** 采用 Companion Server（FastAPI 本地服务）方案，支持非 YouTube 音频/视频转写
+
+**Why:**
+- Chrome 扩展无法直接运行 ffmpeg/yt_dlp（浏览器安全限制）
+- 本地服务可 100% 复用现有 CLI 代码（`perform_azure_diarization`）
+- 零额外成本，使用用户自己的 Azure 密钥
+- API 密钥存储在本地，不经过任何第三方服务器
+
+**Alternatives:**
+- 方案 A (Native Messaging)：需要开发 Native Host 程序、跨平台安装脚本，用户门槛高
+- 方案 C (Cloudflare Workers)：yt-dlp 无法在 Workers 中运行，致命缺陷
+- 方案 D (Web Audio API)：必须完整播放视频，用户体验极差
+- 方案 E (第三方转写服务)：需要额外 API 密钥和费用
+
+**Consequences:**
+- 新增文件：
+  - `any2summary/server.py` - FastAPI 服务端（~260 行）
+  - `test/test_server.py` - 服务端测试（~280 行，16 个测试用例）
+- 修改文件：
+  - `any2summary/cli.py` - 添加 `serve` 子命令
+  - `chrome_extension/src/summarize.js` - 添加本地服务调用逻辑
+  - `chrome_extension/src/options.html/js` - 添加本地服务配置 UI
+  - `chrome_extension/config/default_settings.json` - 添加 `local_server_url`、`local_server_enabled`
+  - `pyproject.toml` - 添加 `[server]` 可选依赖（fastapi, uvicorn）
+  - `README.md` - 添加 Companion Server 文档
+- API 端点：
+  - `GET /api/health` - 健康检查
+  - `POST /api/transcribe` - 音频转写
+  - `POST /api/summarize` - 完整摘要流程
+- 使用方式：
+  1. 安装依赖：`pip install any2summary[server]`
+  2. 启动服务：`any2summary serve --port 8765`
+  3. Chrome 扩展 Options 页启用本地服务
+- 安全说明：服务默认绑定 127.0.0.1，仅本机可访问
+
+---
+
+## 2026-01-24: Chrome 扩展 "Invalid filename" Bug 修复
+
+**Decision:** 增强 `generateFilename` 函数，添加文件名有效性验证和清理逻辑
+
+**Why:**
+- Chrome downloads API 在文件名以 `.` 开头或只包含 `.`/`-` 时返回 "Invalid filename" 错误
+- 原有白名单正则 `[^\w\u4e00-\u9fa5...]` 保留了 `.` 和 `-`，导致特殊标题（如 `"..."`、`".-.-.-"`）生成无效文件名
+- 这类标题处理后 baseName 不为空，不会触发 URL fallback
+
+**Alternatives:**
+- 从白名单中移除 `.` 和 `-`（会影响正常包含这些字符的标题，如 "Node.js"）
+- 仅在最终结果验证（不够健壮，可能遗漏 URL fallback 中的问题）
+
+**Consequences:**
+- 添加 `isValidBaseName()` 函数：验证不以 `.` 开头且不只包含 `.`/`-`
+- 添加 `sanitizeBaseName()` 函数：移除开头的 `.`
+- 标题和 URL 处理后都会进行验证，无效时回退到 "summary"
+- 新增 5 个边缘情况测试用例（`TestInvalidFilenameEdgeCases`）
+- 修改文件：`fileSaver.js`、`test_filesaver_filename.py`
+
+---
+
+## 2026-01-24: Chrome 扩展文件命名规则对齐 cli.py
+
+**Decision:** 修改 Chrome 扩展的 `generateFilename()` 函数，使其与 cli.py 的命名规则一致
+
+**Why:**
+- Chrome 扩展原有命名格式 `{title}_{timestamp}.md` 与 cli.py 的 `【{domain}】{title}-{year}-M{month}_summary.md` 不一致
+- 用户希望两端生成的文件名保持一致，便于统一管理
+- 对齐后文件名包含更多上下文信息（域名、发布时间）
+
+**Alternatives:**
+- 保持现有命名规则（不推荐，用户需求明确）
+- cli.py 对齐 Chrome 扩展（改动范围更大，cli.py 用户可能已习惯现有格式）
+
+**Consequences:**
+- `fileSaver.js` 新增 3 个辅助函数：
+  1. `extractDomain(url)` - 从 URL 提取域名，支持 YouTube/Bilibili 友好名称映射
+  2. `deriveYearMonth(dateStr)` - 从发布日期提取年月，格式为 `{year}-M{month}`
+  3. `sanitizeFilenameBase(text)` - 黑名单清理标题（删除非法字符、空格、emoji）
+- `generateFilename()` 签名变更：接受 `metadata` 参数获取发布日期
+- `saveSummaryAsMarkdown()` 签名变更：传递 `metadata` 给 `generateFilename()`
+- `background.js` 更新：两处调用增加 `metadata` 参数
+- 重名处理差异：Chrome 使用 `conflictAction: 'uniquify'` 添加 `(1)` 后缀，cli.py 使用时间戳
+- 新增测试用例：`TestDomainMapping`（5 个）、`TestCliCompatibility`（3 个）
+- 修改文件：`fileSaver.js`、`background.js`、`test_filesaver_filename.py`、`README.md`

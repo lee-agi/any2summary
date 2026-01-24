@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "any2summary for Chrome",
+  "version": "0.1.0",
+  "description": "手动点击触发：读取当前标签页 URL，调用 Azure/OpenAI 生成摘要并在弹窗展示，可配置 API Key、端点与缓存策略。",
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "any2summary"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "notifications",
+    "downloads"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "options_page": "src/options.html",
+  "side_panel": {
+    "default_path": "src/sidepanel.html"
+  },
+  "commands": {
+    "run-summary": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S"
+      },
+      "description": "Summarize current tab"
+    }
+  },
+  "icons": {
+    "16": "src/icon16.png",
+    "48": "src/icon48.png",
+    "128": "src/icon128.png"
+  }
+}

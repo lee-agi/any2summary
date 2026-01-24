@@ -2,6 +2,8 @@
 
 `any2summary` is a command-line toolkit that handles the entire pipeline for podcasts, videos, and long-form articles—download, transcription, optional Azure speaker diarization, and Markdown summarization—directly on your local machine. The CLI emits structured JSON by default, and when Azure summarization is enabled it also writes Markdown with a cover, table of contents, and timeline table so long-form content can drop into your note-taking system with minimal effort.
 
+> Changelog: see `CHANGELOG.md` for version history and notable changes.
+
 > 📘 Looking for the Simplified Chinese version? See `README.zh.md` in the project root. Both documents share the same structure and should stay in sync.
 
 ## Use Cases
@@ -18,6 +20,73 @@
 - Article mode (`fetch_article_assets`) caches `article_raw.html`, `article_content.txt`, and `article_metadata.json`, then applies `ARTICLE_SUMMARY_PROMPT`; `--article-summary-prompt-file` overrides the default. Image and table links are preserved to help inspect the original page.
 - `--clean-cache` clears cached artifacts for the current URL; `ANY2SUMMARY_DOTENV` automatically loads a `.env` file and remains compatible with legacy `PODCAST_TRANSFORMER_*` variables.
 - CLI output is always indented JSON; in batch mode each job prints a separate JSON document, making it easy to stream-parse.
+
+### Chrome Extension
+- **位置**：`chrome_extension/`，纯前端 MV3，具备与 CLI 相同的核心功能。
+- **支持的内容类型**：
+  - **YouTube 视频**：自动获取字幕 + AI 总结（无需后端）
+  - **网页文章**：HTML 解析提取内容 + AI 总结
+  - **通用 URL**：直接 AI 总结（fallback）
+- **核心模块**（移植自 cli.py）：
+  - `contentDetector.js` - 智能检测 URL 类型（视频/音频/文章）
+  - `youtubeTranscript.js` - YouTube 字幕获取
+  - `articleParser.js` - 文章内容提取
+  - `prompts.js` - Prompt 模板（视频/文章不同模板）
+  - `summarize.js` - 主入口，整合所有模块
+- **配置**：在扩展 Options 页填写 Endpoint、Deployment、API Key；支持：
+  - `preferred_languages`: 字幕语言偏好（默认 en, zh-Hans, zh-Hant）
+  - `use_responses_api`: 切换 Responses API / Chat Completions API
+  - `max_output_tokens`: 最大输出 token 数
+  - 缓存参数（TTL、最大条目）
+- **安装**：Chrome 打开 `chrome://extensions` → 开启开发者模式 → "加载已解压的扩展程序" 指向 `chrome_extension/`。
+- **侧边栏**：`src/sidepanel.html` 实时显示状态与结果。
+- **快捷键**：`Ctrl+Shift+S` 触发当前页摘要（macOS 上 Command+Shift+S）。
+- **Tab 级并行摘要**：支持多个 Tab 同时运行摘要任务，每个 Tab 的状态独立管理，互不干扰。切换 Tab 时侧边栏自动显示当前 Tab 的状态。
+- **文件命名**：与 cli.py 保持一致，格式为 `【{domain}】{title}-{year}-M{month}_summary.md`，例如 `【YouTube】iPhone新品发布-2024-M01_summary.md`；重名文件由 Chrome downloads API 自动添加 `(1)` 后缀。
+- **限制**：非 YouTube 的音频/视频转写需要启用本地 Companion Server（浏览器无法运行 ffmpeg）。
+
+### Companion Server（本地服务）
+
+Chrome 扩展可以通过本地 Companion Server 支持非 YouTube 的音频/视频转写功能。
+
+**启动服务：**
+```bash
+# 安装服务端依赖
+pip install any2summary[server]
+
+# 启动本地服务（默认端口 8765）
+any2summary serve
+
+# 自定义端口
+any2summary serve --port 9000
+
+# 开发模式（热重载）
+any2summary serve --reload
+```
+
+**API 端点：**
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `/api/health` | GET | 健康检查，返回服务状态和可用功能 |
+| `/api/transcribe` | POST | 音频转写（调用 Azure diarization） |
+| `/api/summarize` | POST | 完整摘要流程（转写 + AI 总结） |
+
+**Chrome 扩展配置：**
+1. 打开扩展 Options 页面
+2. 在「本地服务配置」部分启用本地服务
+3. 填写本地服务 URL（默认 `http://127.0.0.1:8765`）
+4. 点击「测试连接」验证服务可用性
+
+**工作流程：**
+1. 用户访问非 YouTube 的视频/音频页面
+2. Chrome 扩展检测到本地服务可用
+3. 扩展调用本地 `/api/transcribe` 获取转写结果
+4. 扩展使用 Azure OpenAI 生成摘要
+
+**安全说明：**
+- 服务默认绑定 `127.0.0.1`，仅本机可访问
+- API 密钥存储在本地，不经过任何第三方服务器
+- 生产环境不建议使用 `--host 0.0.0.0`
 
 ## Quick Start
 
@@ -55,6 +124,22 @@ python -m any2summary.cli \
 The script loads `.env` located in the same directory and calls `setup_and_run.sh`, making it convenient to verify Azure credentials.
 
 ## CLI Reference
+
+### Subcommands
+
+| Subcommand | Description |
+| --- | --- |
+| (default) | Run the main summarization pipeline |
+| `serve` | Start the local companion server for Chrome extension support |
+
+**`serve` options:**
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--host` | `127.0.0.1` | Host to bind to |
+| `--port` | `8765` | Port to bind to |
+| `--reload` | Off | Enable auto-reload for development |
+
+### Main Command Arguments
 
 | Argument | Type / Default | Required | Description | Typical Usage |
 | --- | --- | --- | --- | --- |
@@ -151,7 +236,7 @@ python -m any2summary.cli \
 - **Default prompt management:** editing `prompts/summary_prompt.txt` or `prompts/article_prompt.txt` immediately updates the CLI’s built-in behavior.
 - **Speaker accuracy:** use `--known-speaker name=sample.wav` or `--known-speaker-name` hints to improve Azure labels.
 - **Azure streaming:** enabled by default; disable with `--no-azure-streaming` in CI or log-sensitive environments.
-- **Streaming resiliency & checkpoints:** `_consume_transcription_response` logs warnings and preserves collected chunks when Azure closes the HTTP stream early (e.g., `RemoteProtocolError`、`httpcore.RemoteProtocolError`), and diarization writes per-segment checkpoints (`diarization.partial.json`) so long audios can resume after connection errors without restarting from scratch.
+- **Streaming resiliency & checkpoints:** `_consume_transcription_response` logs warnings and preserves collected chunks when Azure closes the HTTP stream early (e.g., `RemoteProtocolError`、`httpcore.RemoteProtocolError`), diarization写入分段级 checkpoint (`diarization.partial.json`)，连接中断可续跑；遇到网络/传输错误时单段最多两次尝试，重试前会落盘 checkpoint，必要时可用 `--clean-cache` 强制重跑。
 - **Retry safety:** `_run_single_with_retry` reruns each URL once when the first attempt returns a non-zero exit code, and `_run_multiple` mirrors the behavior for batch jobs to smooth over transient network errors.
 - **Android fallback:** `yt_dlp` automatically retries with Android settings on YouTube 403 errors; provide cookies through `ANY2SUMMARY_YTDLP_COOKIES` for gated content.
 - **Payload debugging:** set `ANY2SUMMARY_DEBUG_PAYLOAD=1` to dump raw Azure responses as JSON in the cache folder.
@@ -183,7 +268,15 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest test/test_cli.py test/test_cli_article.p
 # From the repo root:
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest any2summary/test/
 pytest test/ -q  # regression + integration suites
+
+# Run live Azure end-to-end cases only when secrets are provided:
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -m e2e test/
 ```
+> E2E tests are deselected by default; set `AZURE_OPENAI_API_KEY`,
+> `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_SUMMARY_DEPLOYMENT` (plus
+> optional `AZURE_OPENAI_SUMMARY_API_VERSION`) to enable them. Secrets must be
+> injected via environment variables/CI secrets instead of hard-coding, and
+> test logs should mask keys.
 
 ## FAQ
 - **403 Forbidden / audio download fails**: verify the URL is publicly accessible; for login-required content, provide cookies via `ANY2SUMMARY_YTDLP_COOKIES` or rely on the default proxy in `setup_and_run.sh`.

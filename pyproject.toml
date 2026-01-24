@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "any2summary"
-version = "0.0.2"
+version = "1.0.0"
 description = "any2summary is a command-line toolkit that handles the entire pipeline for podcasts, videos, and long-form articles—download, transcription, optional Azure speaker diarization, and Markdown summarization—directly on your local machine. "
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,13 +15,18 @@ dependencies = [
     "youtube-transcript-api>=0.6.2",
     "yt-dlp>=2024.3.10",
     "httpx[socks]>=0.27.0",
+    "numpy>=1.24.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0"]
+server = ["fastapi>=0.109.0", "uvicorn>=0.27.0"]
 
 [project.scripts]
 any2summary = "any2summary.cli:main"
+
+[project.urls]
+Changelog = "CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["."]

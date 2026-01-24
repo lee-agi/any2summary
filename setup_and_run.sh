@@ -41,6 +41,10 @@ if [ -f "${PROJECT_ROOT}/requirements.txt" ]; then
   python -m pip install -r "${PROJECT_ROOT}/requirements.txt"
 fi
 
+# Install local package in editable mode to ensure latest code is used
+echo "[setup] Installing local any2summary package" >&2
+python -m pip install -e "${PROJECT_ROOT}"
+
 if printf '%s\n' "$@" | grep -E -q -- "--force-azure-diarization|--azure-summary"; then
   if [ -z "${AZURE_OPENAI_API_KEY:-}" ] || [ -z "${AZURE_OPENAI_ENDPOINT:-}" ]; then
     echo "[error] AZURE_OPENAI_API_KEY 或 AZURE_OPENAI_ENDPOINT 未设置。" >&2

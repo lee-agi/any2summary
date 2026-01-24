@@ -2,6 +2,8 @@
 
 `any2summary` 是一个面向播客、视频与网页文章的命令行工具，可在本地一次性完成“下载/转写 → 说话人分离 → 摘要导出”整条链路。CLI 默认输出结构化 JSON，并在启用 Azure 摘要后生成带封面、目录与时间轴表格的 Markdown，帮助你把长内容快速同步到知识库或笔记工具，大幅提高知识获取效率。
 
+> 更新日志：请参阅 `CHANGELOG.md` 获取版本历史与主要改动。
+
 > Looking for the English version? Check `README.md`. 两份 README 结构一致，更新时请保持同步。
 
 ## 适用场景
@@ -184,7 +186,14 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest test/test_cli.py test/test_cli_article.p
 # 或在仓库根目录执行：
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest any2summary/test/
 pytest test/ -q  # 回归与集成用例
+
+# 如需跑真实 Azure 端到端用例（默认跳过）：
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -m e2e test/
 ```
+> 端到端用例默认不执行；需显式配置 `AZURE_OPENAI_API_KEY`、
+> `AZURE_OPENAI_ENDPOINT`、`AZURE_OPENAI_SUMMARY_DEPLOYMENT`（可选
+> `AZURE_OPENAI_SUMMARY_API_VERSION`）。务必通过环境变量/CI Secrets 注入，
+> 不要硬编码，并确保日志中对密钥做掩码处理。
 
 ## 常见问题
 - **403 Forbidden / 无法下载音频**：确认 URL 可直接访问；若需登录，请提供 cookies (`ANY2SUMMARY_YTDLP_COOKIES`) 或使用 `setup_and_run.sh` 默认代理。

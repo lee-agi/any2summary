@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>any2summary</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: 'Roboto', 'Segoe UI', Arial, sans-serif;
+        margin: 0;
+        padding: 16px;
+        width: 360px;
+        background: #fafafa;
+      }
+      /* Material Design Button */
+      .md-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        padding: 12px 24px;
+        font-size: 14px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #fff;
+        background: #1976d2;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        box-shadow: 0 2px 4px rgba(25, 118, 210, 0.3);
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        position: relative;
+        overflow: hidden;
+      }
+      .md-button:hover {
+        background: #1565c0;
+        box-shadow: 0 4px 8px rgba(25, 118, 210, 0.4);
+        transform: translateY(-1px);
+      }
+      .md-button:active {
+        background: #0d47a1;
+        box-shadow: 0 1px 2px rgba(25, 118, 210, 0.3);
+        transform: translateY(0);
+      }
+      .md-button:disabled {
+        background: #bdbdbd;
+        box-shadow: none;
+        cursor: not-allowed;
+        transform: none;
+      }
+      /* Ripple effect */
+      .md-button::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle, rgba(255,255,255,0.3) 10%, transparent 10%);
+        background-repeat: no-repeat;
+        background-position: center;
+        transform: scale(0);
+        opacity: 0;
+      }
+      .md-button:active::after {
+        transform: scale(10);
+        opacity: 1;
+        transition: transform 0.3s, opacity 0.3s;
+      }
+      /* Icon */
+      .md-button svg {
+        width: 18px;
+        height: 18px;
+        fill: currentColor;
+      }
+      /* Status */
+      #status {
+        margin-top: 12px;
+        font-size: 13px;
+        color: #666;
+        text-align: center;
+        min-height: 20px;
+      }
+      /* Result area */
+      .result {
+        white-space: pre-wrap;
+        margin-top: 12px;
+        padding: 12px;
+        font-size: 13px;
+        line-height: 1.5;
+        background: #fff;
+        border-radius: 8px;
+        border: 1px solid #e0e0e0;
+        max-height: 300px;
+        overflow-y: auto;
+      }
+      .result:empty {
+        display: none;
+      }
+      .error {
+        color: #d32f2f;
+        background: #ffebee;
+        border-color: #ffcdd2;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="run" class="md-button">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zM6 20V4h5v7h7v9H6z"/>
+        <path d="M8 12h8v2H8zm0 4h8v2H8z"/>
+      </svg>
+      摘要当前页面
+    </button>
+    <div id="status"></div>
+    <div class="result" id="result"></div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

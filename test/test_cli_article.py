@@ -816,6 +816,10 @@ def test_cli_handles_multiple_urls(
         return [dict(segment) for segment in transcripts[video_url]]
 
     monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
+    # Disable smart detection to use legacy white list behavior for these generic URLs
+    monkeypatch.setenv("ANY2SUMMARY_DISABLE_SMART_DETECTION", "1")
+    # Clear content type cache to ensure fresh detection
+    cli._CONTENT_TYPE_CACHE.clear()
     monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
     def fake_article_assets(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("no article")
@@ -859,6 +863,10 @@ def test_cli_multiple_urls_continues_on_error(
         raise RuntimeError("transcript unavailable")
 
     monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
+    # Disable smart detection to use legacy white list behavior for these generic URLs
+    monkeypatch.setenv("ANY2SUMMARY_DISABLE_SMART_DETECTION", "1")
+    # Clear content type cache to ensure fresh detection
+    cli._CONTENT_TYPE_CACHE.clear()
     monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
     def fake_article_assets_fail(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("no article")
