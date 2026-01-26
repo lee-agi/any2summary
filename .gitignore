@@ -1,5 +1,6 @@
 .pytest_cache/
 .venv
+CLAUDE.md
 AGENTS.md
 WARP.md
 any2summary/__pycache__/

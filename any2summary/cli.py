@@ -353,7 +353,7 @@ def _transcribe_audio_file_direct(
             "Azure OpenAI 凭据缺失。请设置 AZURE_OPENAI_API_KEY 与 AZURE_OPENAI_ENDPOINT。"
         )
 
-    deployment = os.getenv("AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT") or "whisper"
+    model = os.getenv("AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT") or "gpt-4o-transcribe-diarize"
     api_version = os.getenv("AZURE_OPENAI_API_VERSION") or "2024-06-01"
 
     os.makedirs(cache_dir, exist_ok=True)
@@ -383,7 +383,7 @@ def _transcribe_audio_file_direct(
 
     with open(audio_path, "rb") as audio_file:
         response = client.audio.transcriptions.create(
-            model=deployment,
+            model=model,
             file=audio_file,
             language=language,
             response_format="verbose_json",

@@ -100,8 +100,8 @@ function normalizeDomainLabel(domain) {
  * @returns {string} 规范化的 domain 名称
  */
 function extractDomain(url, metadata = {}) {
-  // 优先从 metadata 提取 category
-  const category = metadata.category || metadata.categories?.[0];
+  // 优先从 metadata 提取 category（确保空字符串不会触发）
+  const category = (metadata.category || metadata.categories?.[0] || "").trim();
   if (category) {
     return normalizeDomainLabel(category);
   }

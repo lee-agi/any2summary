@@ -75,6 +75,29 @@ Chrome 扩展支持取消正在进行的摘要任务：
 - `chrome_extension/src/contentDetector.js` - 内容类型检测支持取消
 - `chrome_extension/src/popup.js` - 取消按钮逻辑和状态切换
 - `chrome_extension/src/popup.html` - 取消按钮 UI
+- `chrome_extension/src/i18n.js` - 国际化工具模块
+- `chrome_extension/_locales/` - 多语言消息文件
+
+### 国际化 (i18n)
+Chrome 扩展支持多语言，根据浏览器语言自动切换：
+- 英文 (en) - 默认语言
+- 简体中文 (zh_CN)
+- 繁体中文 (zh_TW)
+
+**核心文件**：
+- `_locales/en/messages.json` - 英文消息
+- `_locales/zh_CN/messages.json` - 简体中文消息
+- `_locales/zh_TW/messages.json` - 繁体中文消息
+- `src/i18n.js` - 国际化工具函数
+
+**使用方式**：
+- HTML: `<span data-i18n="messageKey">Fallback text</span>`
+- JS: `import { i18n } from "./i18n.js"; i18n.statusRunning()`
+
+### Chrome Web Store 发布
+- **隐私政策**: `docs/privacy.html` (GitHub Pages 托管)
+- **manifest.json**: 版本号 1.0.0，使用 `__MSG_*__` 国际化
+- **商店资源**: `docs/store-assets/` (截图需手动截取)
 
 ### 任务状态
 - `running` - 任务运行中（显示取消按钮）
@@ -103,6 +126,18 @@ Chrome 扩展的文件命名逻辑与 CLI 保持一致：
 3. 默认值 `1970-M01`
 
 ## 版本历史
+- v1.4.0: Chrome 扩展 YouTube Title 为空问题修复
+  - `background.js` 添加 title fallback，空标题显示为 "未知标题"（与 CLI 一致）
+  - `background.js` 清理标题中的特殊字符（`:`, `/`, `\`, `` ` ``）
+  - `fileSaver.js` extractDomain() 修复空字符串 category 导致的 "General" 问题
+  - 文件名 domain 现在能正确显示 "YouTube" 而非 "General"
+
+- v1.3.0: Chrome Web Store 发布准备
+  - 国际化支持（英文、简体中文、繁体中文）
+  - 隐私政策页面 (`docs/privacy.html`)
+  - manifest.json 优化（版本号 1.0.0，i18n 支持）
+  - `i18n.js` 国际化工具模块
+
 - v1.2.0: Chrome 扩展与 CLI 文件命名对齐
   - `sanitizeFilenameBase()` 简化为仅删除 `\/:*?"<>|` 和空格（保留 emoji）
   - `deriveYearMonth()` 支持 8 位纯数字格式 YYYYMMDD

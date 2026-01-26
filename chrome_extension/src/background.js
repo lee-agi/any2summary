@@ -192,7 +192,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (settings.auto_save_summary && text) {
         try {
           broadcastProgress(tab.id, 0.95, "保存文件...");
-          const title = result?.metadata?.title || "";
+          // 与 CLI 一致：清理标题中的特殊字符，并添加 fallback
+          const titleRaw = String(result?.metadata?.title || "").replace(/[:\/\\`]/g, "");
+          const title = titleRaw.trim() || "未知标题";
           const metadata = { ...result?.metadata } || {};
 
           // 添加 generatedAt 作为日期备选（与 CLI 一致）
@@ -337,7 +339,9 @@ chrome.commands.onCommand.addListener(async (command) => {
     // 自动保存摘要到本地
     if (settings.auto_save_summary && text) {
       try {
-        const title = result?.metadata?.title || "";
+        // 与 CLI 一致：清理标题中的特殊字符，并添加 fallback
+        const titleRaw = String(result?.metadata?.title || "").replace(/[:\/\\`]/g, "");
+        const title = titleRaw.trim() || "未知标题";
         const metadata = { ...result?.metadata } || {};
 
         // 添加 generatedAt 作为日期备选（与 CLI 一致）
