@@ -1,0 +1,236 @@
+{
+  "extName": {
+    "message": "any2summary",
+    "description": "Extension name shown in Chrome"
+  },
+  "extDescription": {
+    "message": "AI 驅動的頁面摘要工具。使用 Azure/OpenAI GPT 為 YouTube 影片、文章和網頁生成摘要。",
+    "description": "Extension description shown in Chrome Web Store"
+  },
+  "popupTitle": {
+    "message": "any2summary",
+    "description": "Popup window title"
+  },
+  "summarizeButton": {
+    "message": "摘要目前頁面",
+    "description": "Main action button in popup"
+  },
+  "cancelButton": {
+    "message": "取消",
+    "description": "Cancel button text"
+  },
+  "statusRunning": {
+    "message": "執行中...",
+    "description": "Status when summarization is in progress"
+  },
+  "statusComplete": {
+    "message": "完成",
+    "description": "Status when summarization is complete"
+  },
+  "statusFailed": {
+    "message": "失敗",
+    "description": "Status when summarization failed"
+  },
+  "statusCancelled": {
+    "message": "已取消",
+    "description": "Status when task is cancelled"
+  },
+  "optionsTitle": {
+    "message": "any2summary 設定",
+    "description": "Options page title"
+  },
+  "apiConfigTitle": {
+    "message": "API 設定",
+    "description": "API configuration card title"
+  },
+  "endpointLabel": {
+    "message": "Azure/OpenAI Endpoint",
+    "description": "API endpoint input label"
+  },
+  "endpointPlaceholder": {
+    "message": "https://region-001.openai.azure.com",
+    "description": "API endpoint placeholder"
+  },
+  "apiVersionLabel": {
+    "message": "API 版本",
+    "description": "API version input label"
+  },
+  "apiVersionPlaceholder": {
+    "message": "2025-04-01-preview",
+    "description": "API version placeholder"
+  },
+  "deploymentLabel": {
+    "message": "部署名稱 / 模型",
+    "description": "Deployment input label"
+  },
+  "deploymentPlaceholder": {
+    "message": "gpt-5.1-codex",
+    "description": "Deployment placeholder"
+  },
+  "apiKeyLabel": {
+    "message": "API Key",
+    "description": "API key input label"
+  },
+  "apiKeyPlaceholder": {
+    "message": "sk-...",
+    "description": "API key placeholder"
+  },
+  "useResponsesApiTitle": {
+    "message": "使用 Responses API",
+    "description": "Toggle title for Responses API"
+  },
+  "useResponsesApiDesc": {
+    "message": "啟用新版 Responses API 格式",
+    "description": "Toggle description for Responses API"
+  },
+  "cacheTitle": {
+    "message": "快取設定",
+    "description": "Cache settings card title"
+  },
+  "cacheEnabledTitle": {
+    "message": "啟用快取",
+    "description": "Toggle title for cache"
+  },
+  "cacheEnabledDesc": {
+    "message": "快取摘要結果，避免重複請求",
+    "description": "Toggle description for cache"
+  },
+  "cacheTtlLabel": {
+    "message": "快取 TTL (分鐘)",
+    "description": "Cache TTL input label"
+  },
+  "cacheMaxLabel": {
+    "message": "快取最多條目",
+    "description": "Max cache entries input label"
+  },
+  "localServerTitle": {
+    "message": "本機服務設定",
+    "description": "Local server card title"
+  },
+  "localServerDesc": {
+    "message": "啟用後，影片/音訊將透過本機服務進行轉寫。需要先執行 `any2summary serve`。",
+    "description": "Local server description"
+  },
+  "localServerProxyDesc": {
+    "message": "YouTube 代理支援：如果您所在地區無法直接存取 YouTube，啟用本機服務後可透過系統代理取得字幕。請確保已設定 HTTP_PROXY / HTTPS_PROXY 環境變數。",
+    "description": "Local server proxy description"
+  },
+  "localServerEnabledTitle": {
+    "message": "啟用本機服務",
+    "description": "Toggle title for local server"
+  },
+  "localServerEnabledDesc": {
+    "message": "使用本機服務進行音訊轉寫",
+    "description": "Toggle description for local server"
+  },
+  "localServerUrlLabel": {
+    "message": "本機服務 URL",
+    "description": "Local server URL input label"
+  },
+  "localServerUrlPlaceholder": {
+    "message": "http://127.0.0.1:8765",
+    "description": "Local server URL placeholder"
+  },
+  "testConnectionButton": {
+    "message": "測試連線",
+    "description": "Test connection button"
+  },
+  "autoSaveTitle": {
+    "message": "自動儲存設定",
+    "description": "Auto save card title"
+  },
+  "autoSaveDesc": {
+    "message": "摘要完成後自動儲存為 Markdown 檔案到 Chrome 下載目錄。",
+    "description": "Auto save description"
+  },
+  "autoSaveEnabledTitle": {
+    "message": "自動儲存摘要",
+    "description": "Toggle title for auto save"
+  },
+  "autoSaveEnabledDesc": {
+    "message": "摘要完成後自動儲存到本機",
+    "description": "Toggle description for auto save"
+  },
+  "saveSubdirectoryLabel": {
+    "message": "儲存子目錄",
+    "description": "Save subdirectory input label"
+  },
+  "saveButton": {
+    "message": "儲存設定",
+    "description": "Save button text"
+  },
+  "settingsSaved": {
+    "message": "設定已儲存",
+    "description": "Toast message when settings are saved"
+  },
+  "errorSavingSettings": {
+    "message": "儲存設定時發生錯誤",
+    "description": "Toast message when settings save fails"
+  },
+  "serverOnline": {
+    "message": "伺服器在線",
+    "description": "Server status when online"
+  },
+  "serverOffline": {
+    "message": "伺服器離線或無法存取",
+    "description": "Server status when offline"
+  },
+  "processingUrl": {
+    "message": "正在處理連結：$URL$",
+    "description": "Status message when processing a URL",
+    "placeholders": {
+      "url": {
+        "content": "$1",
+        "example": "https://example.com"
+      }
+    }
+  },
+  "shortcutTriggered": {
+    "message": "快捷鍵觸發，處理中：$URL$",
+    "description": "Status message when shortcut is used",
+    "placeholders": {
+      "url": {
+        "content": "$1",
+        "example": "https://example.com"
+      }
+    }
+  },
+  "summaryComplete": {
+    "message": "摘要完成",
+    "description": "Status message when summary is done"
+  },
+  "cannotGetTabUrl": {
+    "message": "無法取得目前標籤頁 URL",
+    "description": "Error message when tab URL is unavailable"
+  },
+  "pleaseConfigureApiKey": {
+    "message": "請先在 Options 頁填寫 API Key",
+    "description": "Error when API key is not configured"
+  },
+  "unknownError": {
+    "message": "未知錯誤",
+    "description": "Generic error message"
+  },
+  "serverConnecting": {
+    "message": "正在檢測...",
+    "description": "Server status when testing connection"
+  },
+  "serverConnectSuccess": {
+    "message": "連線成功 (v$VERSION$) - $SERVICES$",
+    "description": "Server status when connection successful",
+    "placeholders": {
+      "version": {
+        "content": "$1",
+        "example": "1.0.0"
+      },
+      "services": {
+        "content": "$2",
+        "example": "transcribe: ok"
+      }
+    }
+  },
+  "serverConnectFailed": {
+    "message": "連線失敗 - 請確保已執行 any2summary serve",
+    "description": "Server status when connection failed"
+  }
+}

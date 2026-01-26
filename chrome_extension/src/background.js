@@ -8,6 +8,7 @@ import { loadSettings, migrateOldTaskState } from "./storage.js";
 import { summarizeUrl } from "./summarize.js";
 import { saveSummaryAsMarkdown } from "./fileSaver.js";
 import { taskStateManager } from "./taskStateManager.js";
+import { i18n } from "./i18n.js";
 
 // Service Worker startup: clean up old states
 (async () => {
@@ -56,7 +57,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.url) {
         console.error("[Background] Cannot get active tab URL");
-        sendResponse({ ok: false, error: "无法获取当前标签页 URL" });
+        sendResponse({ ok: false, error: i18n.cannotGetTabUrl() });
         return;
       }
 
@@ -64,11 +65,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       await taskStateManager.setState(tab.id, {
         status: "running",
-        message: "正在处理链接：" + tab.url,
+        message: i18n.processingUrl(tab.url),
         isError: false,
         url: tab.url,
       });
-      broadcastStatus(tab.id, "运行中...", "正在处理链接：" + tab.url);
+      broadcastStatus(tab.id, i18n.statusRunning(), i18n.processingUrl(tab.url));
 
       const settings = await loadSettings();
       console.log("[Background] Calling summarizeUrl...");
@@ -85,11 +86,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.log("[Background] Summary completed successfully");
       await taskStateManager.setState(tab.id, {
         status: "completed",
-        message: text || "摘要完成",
+        message: text || i18n.summaryComplete(),
         isError: false,
         url: tab.url,
       });
-      broadcastStatus(tab.id, "完成", text || "摘要完成");
+      broadcastStatus(tab.id, i18n.statusComplete(), text || i18n.summaryComplete());
 
       // 自动保存摘要到本地
       if (settings.auto_save_summary && text) {
@@ -121,7 +122,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           isError: true,
           url: tab?.url || "",
         });
-        broadcastStatus(tab.id, "失败", messageText, true);
+        broadcastStatus(tab.id, i18n.statusFailed(), messageText, true);
       }
       sendResponse({ ok: false, error: messageText });
     }
@@ -148,11 +149,11 @@ chrome.commands.onCommand.addListener(async (command) => {
 
     await taskStateManager.setState(tab.id, {
       status: "running",
-      message: "快捷键触发，处理中：" + tab.url,
+      message: i18n.shortcutTriggered(tab.url),
       isError: false,
       url: tab.url,
     });
-    broadcastStatus(tab.id, "运行中...", "快捷键触发，处理中：" + tab.url);
+    broadcastStatus(tab.id, i18n.statusRunning(), i18n.shortcutTriggered(tab.url));
 
     const settings = await loadSettings();
     console.log("[Background] Calling summarizeUrl...");
@@ -168,11 +169,11 @@ chrome.commands.onCommand.addListener(async (command) => {
     console.log("[Background] Summary completed successfully");
     await taskStateManager.setState(tab.id, {
       status: "completed",
-      message: text || "摘要完成",
+      message: text || i18n.summaryComplete(),
       isError: false,
       url: tab.url,
     });
-    broadcastStatus(tab.id, "完成", text || "摘要完成");
+    broadcastStatus(tab.id, i18n.statusComplete(), text || i18n.summaryComplete());
 
     // 自动保存摘要到本地
     if (settings.auto_save_summary && text) {
@@ -201,7 +202,7 @@ chrome.commands.onCommand.addListener(async (command) => {
         isError: true,
         url: tab?.url || "",
       });
-      broadcastStatus(tab.id, "失败", messageText, true);
+      broadcastStatus(tab.id, i18n.statusFailed(), messageText, true);
     }
   }
 });

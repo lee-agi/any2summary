@@ -1,5 +1,6 @@
 import { loadSettings, saveSettings } from "./storage.js";
 import { checkLocalServerHealth } from "./summarize.js";
+import { applyI18n, i18n } from "./i18n.js";
 
 // 表单元素
 const endpointEl = document.getElementById("endpoint");
@@ -49,7 +50,7 @@ function setServerStatus(text, isSuccess) {
  */
 async function testLocalServer() {
   const url = localServerUrlEl.value.trim() || "http://127.0.0.1:8765";
-  setServerStatus("正在检测...", false);
+  setServerStatus(i18n.serverConnecting(), false);
 
   const health = await checkLocalServerHealth(url);
   if (health && health.status === "ok") {
@@ -57,9 +58,9 @@ async function testLocalServer() {
     const serviceList = Object.entries(services)
       .map(([k, v]) => `${k}: ${v ? "✓" : "✗"}`)
       .join(", ");
-    setServerStatus(`连接成功 (v${health.version}) - ${serviceList}`, true);
+    setServerStatus(i18n.serverConnectSuccess(health.version, serviceList), true);
   } else {
-    setServerStatus("连接失败 - 请确保已运行 any2summary serve", false);
+    setServerStatus(i18n.serverConnectFailed(), false);
   }
 }
 
@@ -104,7 +105,7 @@ async function persist() {
     save_subdirectory: saveSubdirectoryEl.value.trim() || "any2summary",
   };
   await saveSettings(settings);
-  showToast("设置已保存", "success");
+  showToast(i18n.settingsSaved(), "success");
 }
 
 // 绑定事件
@@ -112,4 +113,5 @@ document.getElementById("save").addEventListener("click", persist);
 document.getElementById("testServer").addEventListener("click", testLocalServer);
 
 // 初始化
+applyI18n();
 restore();

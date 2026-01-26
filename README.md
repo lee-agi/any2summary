@@ -23,6 +23,7 @@
 
 ### Chrome Extension
 - **位置**：`chrome_extension/`，纯前端 MV3，具备与 CLI 相同的核心功能。
+- **Chrome Web Store**：[any2summary](https://chrome.google.com/webstore/detail/any2summary) - 可直接从商店安装。
 - **支持的内容类型**：
   - **YouTube 视频**：自动获取字幕 + AI 总结（无需后端）
   - **网页文章**：HTML 解析提取内容 + AI 总结
@@ -33,17 +34,22 @@
   - `articleParser.js` - 文章内容提取
   - `prompts.js` - Prompt 模板（视频/文章不同模板）
   - `summarize.js` - 主入口，整合所有模块
+  - `i18n.js` - 国际化支持
+- **国际化**：支持英文、简体中文、繁体中文，根据浏览器语言自动切换。
 - **配置**：在扩展 Options 页填写 Endpoint、Deployment、API Key；支持：
   - `preferred_languages`: 字幕语言偏好（默认 en, zh-Hans, zh-Hant）
   - `use_responses_api`: 切换 Responses API / Chat Completions API
   - `max_output_tokens`: 最大输出 token 数
   - 缓存参数（TTL、最大条目）
-- **安装**：Chrome 打开 `chrome://extensions` → 开启开发者模式 → "加载已解压的扩展程序" 指向 `chrome_extension/`。
+- **安装方式**：
+  - **Chrome Web Store（推荐）**：搜索 "any2summary" 或访问上方链接
+  - **开发者模式**：Chrome 打开 `chrome://extensions` → 开启开发者模式 → "加载已解压的扩展程序" 指向 `chrome_extension/`
 - **侧边栏**：`src/sidepanel.html` 实时显示状态与结果。
 - **快捷键**：`Ctrl+Shift+S` 触发当前页摘要（macOS 上 Command+Shift+S）。
 - **Tab 级并行摘要**：支持多个 Tab 同时运行摘要任务，每个 Tab 的状态独立管理，互不干扰。切换 Tab 时侧边栏自动显示当前 Tab 的状态。
 - **文件命名**：与 cli.py 保持一致，格式为 `【{domain}】{title}-{year}-M{month}_summary.md`，例如 `【YouTube】iPhone新品发布-2024-M01_summary.md`；重名文件由 Chrome downloads API 自动添加 `(1)` 后缀。
 - **限制**：非 YouTube 的音频/视频转写需要启用本地 Companion Server（浏览器无法运行 ffmpeg）。
+- **隐私政策**：[Privacy Policy](https://clzhang.github.io/any2summary/privacy.html) - 所有数据存储在本地，不收集任何个人信息。
 
 ### Companion Server（本地服务）
 

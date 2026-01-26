@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>any2summary 设置</title>
+    <title data-i18n="optionsTitle">any2summary Settings</title>
     <style>
       :root {
         --primary-color: #1a73e8;
@@ -315,33 +315,33 @@
   </head>
   <body>
     <div class="container">
-      <h1>any2summary 配置</h1>
+      <h1 data-i18n="optionsTitle">any2summary Settings</h1>
 
       <!-- API 配置 -->
       <div class="card">
-        <h2 class="card-title">API 配置</h2>
+        <h2 class="card-title" data-i18n="apiConfigTitle">API Configuration</h2>
         <div class="form-group">
-          <label for="endpoint">Azure/OpenAI Endpoint</label>
-          <input id="endpoint" type="text" placeholder="https://region-001.openai.azure.com" />
+          <label for="endpoint" data-i18n="endpointLabel">Azure/OpenAI Endpoint</label>
+          <input id="endpoint" type="text" data-i18n-placeholder="endpointPlaceholder" placeholder="https://region-001.openai.azure.com" />
         </div>
         <div class="row">
           <div class="form-group">
-            <label for="apiVersion">API Version</label>
-            <input id="apiVersion" type="text" placeholder="2025-04-01-preview" />
+            <label for="apiVersion" data-i18n="apiVersionLabel">API Version</label>
+            <input id="apiVersion" type="text" data-i18n-placeholder="apiVersionPlaceholder" placeholder="2025-04-01-preview" />
           </div>
           <div class="form-group">
-            <label for="deployment">Deployment / Model</label>
-            <input id="deployment" type="text" placeholder="gpt-5.1-codex" />
+            <label for="deployment" data-i18n="deploymentLabel">Deployment / Model</label>
+            <input id="deployment" type="text" data-i18n-placeholder="deploymentPlaceholder" placeholder="gpt-5.1-codex" />
           </div>
         </div>
         <div class="form-group">
-          <label for="apiKey">API Key</label>
-          <input id="apiKey" type="password" placeholder="sk-..." />
+          <label for="apiKey" data-i18n="apiKeyLabel">API Key</label>
+          <input id="apiKey" type="password" data-i18n-placeholder="apiKeyPlaceholder" placeholder="sk-..." />
         </div>
         <div class="toggle-group">
           <div class="toggle-label">
-            <span class="toggle-title">使用 Responses API</span>
-            <span class="toggle-description">启用新版 Responses API 格式</span>
+            <span class="toggle-title" data-i18n="useResponsesApiTitle">Use Responses API</span>
+            <span class="toggle-description" data-i18n="useResponsesApiDesc">Enable new Responses API format</span>
           </div>
           <label class="toggle-switch">
             <input type="checkbox" id="useResponses" />
@@ -352,11 +352,11 @@
 
       <!-- 缓存设置 -->
       <div class="card">
-        <h2 class="card-title">缓存设置</h2>
+        <h2 class="card-title" data-i18n="cacheTitle">Cache Settings</h2>
         <div class="toggle-group">
           <div class="toggle-label">
-            <span class="toggle-title">启用缓存</span>
-            <span class="toggle-description">缓存摘要结果，避免重复请求</span>
+            <span class="toggle-title" data-i18n="cacheEnabledTitle">Enable Cache</span>
+            <span class="toggle-description" data-i18n="cacheEnabledDesc">Cache summaries to avoid repeated requests</span>
           </div>
           <label class="toggle-switch">
             <input type="checkbox" id="cacheEnabled" />
@@ -365,11 +365,11 @@
         </div>
         <div class="row" style="margin-top: 16px;">
           <div class="form-group">
-            <label for="cacheTtl">缓存 TTL (分钟)</label>
+            <label for="cacheTtl" data-i18n="cacheTtlLabel">Cache TTL (minutes)</label>
             <input id="cacheTtl" type="number" min="1" placeholder="60" />
           </div>
           <div class="form-group">
-            <label for="cacheMax">缓存最多条目</label>
+            <label for="cacheMax" data-i18n="cacheMaxLabel">Max Cache Entries</label>
             <input id="cacheMax" type="number" min="1" placeholder="50" />
           </div>
         </div>
@@ -377,18 +377,17 @@
 
       <!-- 本地服务配置 -->
       <div class="card">
-        <h2 class="card-title">本地服务配置</h2>
-        <p class="card-description">
-          启用后，视频/音频将通过本地服务进行转写。需要先运行 <code>any2summary serve</code>。
+        <h2 class="card-title" data-i18n="localServerTitle">Local Server Configuration</h2>
+        <p class="card-description" data-i18n="localServerDesc">
+          When enabled, video/audio will be transcribed via the local server. Run `any2summary serve` first.
         </p>
-        <p class="card-description" style="margin-top: 8px; padding: 10px; background: rgba(26, 115, 232, 0.1); border-radius: 6px;">
-          <strong>YouTube 代理支持：</strong>如果您所在地区无法直接访问 YouTube，启用本地服务后可通过系统代理获取字幕。
-          请确保已设置 <code>HTTP_PROXY</code> / <code>HTTPS_PROXY</code> 环境变量。
+        <p class="card-description" style="margin-top: 8px; padding: 10px; background: rgba(26, 115, 232, 0.1); border-radius: 6px;" data-i18n="localServerProxyDesc">
+          YouTube Proxy Support: If YouTube is inaccessible in your region, enable local server to fetch transcripts via system proxy. Ensure HTTP_PROXY / HTTPS_PROXY environment variables are set.
         </p>
         <div class="toggle-group">
           <div class="toggle-label">
-            <span class="toggle-title">启用本地服务</span>
-            <span class="toggle-description">使用本地服务进行音频转写</span>
+            <span class="toggle-title" data-i18n="localServerEnabledTitle">Enable Local Server</span>
+            <span class="toggle-description" data-i18n="localServerEnabledDesc">Use local server for audio transcription</span>
           </div>
           <label class="toggle-switch">
             <input type="checkbox" id="localServerEnabled" />
@@ -396,25 +395,25 @@
           </label>
         </div>
         <div class="form-group" style="margin-top: 16px;">
-          <label for="localServerUrl">本地服务 URL</label>
-          <input id="localServerUrl" type="text" placeholder="http://127.0.0.1:8765" />
+          <label for="localServerUrl" data-i18n="localServerUrlLabel">Local Server URL</label>
+          <input id="localServerUrl" type="text" data-i18n-placeholder="localServerUrlPlaceholder" placeholder="http://127.0.0.1:8765" />
         </div>
         <div style="display: flex; align-items: center; gap: 12px; margin-top: 12px;">
-          <button id="testServer" type="button" class="btn btn-secondary btn-small">测试连接</button>
+          <button id="testServer" type="button" class="btn btn-secondary btn-small" data-i18n="testConnectionButton">Test Connection</button>
           <div id="serverStatus" class="server-status" style="display: none;"></div>
         </div>
       </div>
 
       <!-- 自动保存配置 -->
       <div class="card">
-        <h2 class="card-title">自动保存配置</h2>
-        <p class="card-description">
-          摘要完成后自动保存为 Markdown 文件到 Chrome 下载目录。
+        <h2 class="card-title" data-i18n="autoSaveTitle">Auto Save Configuration</h2>
+        <p class="card-description" data-i18n="autoSaveDesc">
+          Automatically save summaries as Markdown files to Chrome downloads folder.
         </p>
         <div class="toggle-group">
           <div class="toggle-label">
-            <span class="toggle-title">自动保存摘要</span>
-            <span class="toggle-description">摘要完成后自动保存到本地</span>
+            <span class="toggle-title" data-i18n="autoSaveEnabledTitle">Auto Save Summaries</span>
+            <span class="toggle-description" data-i18n="autoSaveEnabledDesc">Save summaries to local files automatically</span>
           </div>
           <label class="toggle-switch">
             <input type="checkbox" id="autoSaveSummary" />
@@ -422,14 +421,14 @@
           </label>
         </div>
         <div class="form-group" style="margin-top: 16px;">
-          <label for="saveSubdirectory">保存子目录</label>
+          <label for="saveSubdirectory" data-i18n="saveSubdirectoryLabel">Save Subdirectory</label>
           <input id="saveSubdirectory" type="text" placeholder="any2summary" />
         </div>
       </div>
 
       <!-- 保存按钮 -->
       <div class="actions">
-        <button id="save" class="btn btn-primary">保存设置</button>
+        <button id="save" class="btn btn-primary" data-i18n="saveButton">Save Settings</button>
       </div>
     </div>
 

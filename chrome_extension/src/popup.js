@@ -1,5 +1,6 @@
 import { loadSettings } from "./storage.js";
 import { taskStateManager } from "./taskStateManager.js";
+import { applyI18n, i18n } from "./i18n.js";
 
 // Track current tab ID for filtering messages
 let currentTabId = null;
@@ -36,6 +37,9 @@ async function initializePopup() {
   }
   console.log("[Popup] DOM elements loaded successfully");
 
+  // Apply i18n translations
+  applyI18n();
+
   // 辅助函数：设置状态
   function setStatus(text) {
     console.log("[Popup] setStatus:", text);
@@ -71,17 +75,17 @@ async function initializePopup() {
     console.log("[Popup] restoreState: found state:", state.status);
     switch (state.status) {
       case "running":
-        setStatus("运行中...");
-        setResult(state.message || "正在处理中，请稍候...");
+        setStatus(i18n.statusRunning());
+        setResult(state.message || i18n.statusRunning());
         runButton.disabled = true;
         break;
       case "completed":
-        setStatus("完成");
+        setStatus(i18n.statusComplete());
         setResult(state.message);
         runButton.disabled = false;
         break;
       case "failed":
-        setStatus("失败");
+        setStatus(i18n.statusFailed());
         setResult(state.message, true);
         runButton.disabled = false;
         break;
@@ -101,14 +105,14 @@ async function initializePopup() {
     console.log("[Popup] Received status update:", message.payload.status);
     setStatus(message.payload.status);
     setResult(message.payload.message || "", message.payload.isError);
-    runButton.disabled = message.payload.status === "运行中...";
+    runButton.disabled = message.payload.status === i18n.statusRunning();
   });
 
   // 确保已配置 API Key
   async function ensureConfigured() {
     const settings = await loadSettings();
     if (!settings.api_key) {
-      throw new Error("请先在 Options 页填写 API Key");
+      throw new Error(i18n.pleaseConfigureApiKey());
     }
     return settings;
   }
@@ -120,46 +124,46 @@ async function initializePopup() {
   runButton.addEventListener("click", async () => {
     console.log("[Popup] Run button clicked");
     runButton.disabled = true;
-    setStatus("运行中...");
+    setStatus(i18n.statusRunning());
     setResult("");
-    broadcastStatus("运行中...", "正在请求 Azure/OpenAI");
+    broadcastStatus(i18n.statusRunning(), i18n.statusRunning());
 
     try {
       await ensureConfigured();
       const response = await chrome.runtime.sendMessage({ type: "RUN_SUMMARY", options: {} });
       if (!response?.ok) {
-        throw new Error(response?.error || "未知错误");
+        throw new Error(response?.error || i18n.unknownError());
       }
 
       const data = response.result;
       const text = data?.output_text || data?.summary || JSON.stringify(data, null, 2);
-      const finalText = text || "未返回内容";
+      const finalText = text || i18n.summaryComplete();
       setResult(finalText);
-      setStatus("完成");
+      setStatus(i18n.statusComplete());
       runButton.disabled = false;
 
-      broadcastStatus("完成", finalText);
+      broadcastStatus(i18n.statusComplete(), finalText);
 
       chrome.notifications.create({
         type: "basic",
-        iconUrl: "src/icon128.png",
+        iconUrl: "icon128.png",
         title: "any2summary",
-        message: "摘要已完成",
+        message: i18n.summaryComplete(),
         contextMessage: finalText.slice(0, 80),
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error("[Popup] Error:", message);
-      setStatus("失败");
-      setResult(message, true);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error("[Popup] Error:", errorMessage);
+      setStatus(i18n.statusFailed());
+      setResult(errorMessage, true);
       runButton.disabled = false;
-      broadcastStatus("失败", message, true);
+      broadcastStatus(i18n.statusFailed(), errorMessage, true);
       chrome.notifications.create({
         type: "basic",
-        iconUrl: "src/icon128.png",
+        iconUrl: "icon128.png",
         title: "any2summary",
-        message: "摘要失败",
-        contextMessage: message.slice(0, 80),
+        message: i18n.statusFailed(),
+        contextMessage: errorMessage.slice(0, 80),
       });
     }
   });

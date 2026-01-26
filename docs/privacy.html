@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy - any2summary Chrome Extension</title>
+    <style>
+        :root {
+            --primary-color: #1a73e8;
+            --text-color: #202124;
+            --text-secondary: #5f6368;
+            --bg-color: #ffffff;
+            --border-color: #dadce0;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background: var(--bg-color);
+            margin: 0;
+            padding: 40px 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: var(--primary-color);
+            font-size: 32px;
+            font-weight: 500;
+            margin-bottom: 8px;
+        }
+
+        .last-updated {
+            color: var(--text-secondary);
+            font-size: 14px;
+            margin-bottom: 32px;
+        }
+
+        h2 {
+            color: var(--text-color);
+            font-size: 20px;
+            font-weight: 500;
+            margin-top: 32px;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        p, li {
+            color: var(--text-secondary);
+            font-size: 16px;
+        }
+
+        ul {
+            padding-left: 24px;
+        }
+
+        li {
+            margin-bottom: 8px;
+        }
+
+        .highlight {
+            background: #e8f0fe;
+            padding: 16px 20px;
+            border-radius: 8px;
+            margin: 24px 0;
+        }
+
+        .highlight p {
+            margin: 0;
+            color: var(--text-color);
+        }
+
+        a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        footer {
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Privacy Policy</h1>
+        <p class="last-updated">Last updated: January 2025</p>
+
+        <div class="highlight">
+            <p><strong>Summary:</strong> any2summary does not collect, store, or share any personal data. All processing happens locally in your browser, and your API keys are stored only on your device.</p>
+        </div>
+
+        <h2>Introduction</h2>
+        <p>any2summary is a Chrome extension that helps you summarize web pages, YouTube videos, and articles using AI. This privacy policy explains how the extension handles your data.</p>
+
+        <h2>Data Collection</h2>
+        <p><strong>We do not collect any personal data.</strong> The extension operates entirely within your browser and does not send any data to our servers.</p>
+
+        <h2>Data Storage</h2>
+        <p>The following data is stored locally in your browser using Chrome's storage API:</p>
+        <ul>
+            <li><strong>API Configuration:</strong> Your Azure OpenAI or compatible API endpoint, API key, and deployment settings. These are stored securely in your browser's local storage and are never transmitted to any third party.</li>
+            <li><strong>Extension Settings:</strong> Your preferences such as cache settings, auto-save options, and local server configuration.</li>
+            <li><strong>Cached Summaries:</strong> If caching is enabled, summaries are temporarily stored locally to avoid redundant API calls.</li>
+        </ul>
+
+        <h2>Data Processing</h2>
+        <p>When you use the extension to summarize content:</p>
+        <ul>
+            <li>The URL and page content of the active tab are read by the extension.</li>
+            <li>This content is sent directly from your browser to your configured AI API endpoint (Azure OpenAI or compatible service) to generate summaries.</li>
+            <li>The extension does not route this data through any intermediate servers.</li>
+            <li>Generated summaries can be saved locally to your device if you enable the auto-save feature.</li>
+        </ul>
+
+        <h2>Third-Party Services</h2>
+        <p>The extension connects to the AI API endpoint you configure (e.g., Azure OpenAI). Please review the privacy policy of your chosen AI service provider:</p>
+        <ul>
+            <li><a href="https://privacy.microsoft.com/" target="_blank">Microsoft Privacy Statement</a> (for Azure OpenAI)</li>
+            <li><a href="https://openai.com/privacy/" target="_blank">OpenAI Privacy Policy</a></li>
+        </ul>
+
+        <h2>Permissions</h2>
+        <p>The extension requires the following permissions:</p>
+        <ul>
+            <li><strong>activeTab:</strong> To read the URL and content of the current tab when you activate the extension.</li>
+            <li><strong>storage:</strong> To save your settings and API configuration locally.</li>
+            <li><strong>scripting:</strong> To extract content from web pages for summarization.</li>
+            <li><strong>notifications:</strong> To notify you when summarization is complete.</li>
+            <li><strong>downloads:</strong> To save summaries as Markdown files to your device.</li>
+            <li><strong>host_permissions (all_urls):</strong> To access content from any website you want to summarize.</li>
+        </ul>
+
+        <h2>Data Sharing</h2>
+        <p><strong>We do not share any data with third parties.</strong> Your data flows directly between your browser and your configured AI API endpoint. We have no access to your API keys, browsing history, or generated summaries.</p>
+
+        <h2>Data Security</h2>
+        <ul>
+            <li>API keys are stored using Chrome's secure storage API.</li>
+            <li>All communication with AI APIs uses HTTPS encryption.</li>
+            <li>No data is transmitted to the extension developer or any third party.</li>
+        </ul>
+
+        <h2>Your Rights</h2>
+        <p>Since all data is stored locally on your device, you have full control:</p>
+        <ul>
+            <li>You can view and modify your settings at any time through the extension's options page.</li>
+            <li>You can clear all stored data by removing the extension.</li>
+            <li>You can export or delete saved summaries from your downloads folder.</li>
+        </ul>
+
+        <h2>Children's Privacy</h2>
+        <p>This extension is not directed at children under the age of 13 and does not knowingly collect any personal information from children.</p>
+
+        <h2>Changes to This Policy</h2>
+        <p>We may update this privacy policy from time to time. Any changes will be posted on this page with an updated revision date.</p>
+
+        <h2>Contact</h2>
+        <p>If you have any questions about this privacy policy, please open an issue on our <a href="https://github.com/clzhang/any2summary" target="_blank">GitHub repository</a>.</p>
+
+        <footer>
+            <p>any2summary Chrome Extension - <a href="https://github.com/clzhang/any2summary" target="_blank">GitHub</a></p>
+        </footer>
+    </div>
+</body>
+</html>
