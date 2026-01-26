@@ -1,5 +1,6 @@
 import { loadSettings } from "./storage.js";
 import { taskStateManager } from "./taskStateManager.js";
+import { applyI18n, i18n } from "./i18n.js";
 
 // Track current tab ID for filtering messages
 let currentTabId = null;
@@ -40,6 +41,9 @@ async function initializePopup() {
     return;
   }
   console.log("[Popup] DOM elements loaded successfully");
+
+  // Apply i18n translations
+  applyI18n();
 
   // 辅助函数：设置运行状态（切换按钮显示）
   function setRunningState(isRunning) {
@@ -105,23 +109,23 @@ async function initializePopup() {
     console.log("[Popup] restoreState: found state:", state.status);
     switch (state.status) {
       case "running":
-        setStatus("运行中...");
-        setResult(state.message || "正在处理中，请稍候...");
+        setStatus(i18n.statusRunning());
+        setResult(state.message || i18n.statusRunning());
         setRunningState(true);
         break;
       case "completed":
-        setStatus("完成");
+        setStatus(i18n.statusComplete());
         setResult(state.message);
         setRunningState(false);
         break;
       case "failed":
-        setStatus("失败");
+        setStatus(i18n.statusFailed());
         setResult(state.message, true);
         setRunningState(false);
         break;
       case "cancelled":
-        setStatus("已取消");
-        setResult(state.message || "任务已取消");
+        setStatus(i18n.statusCancelled());
+        setResult(state.message || i18n.statusCancelled());
         setRunningState(false);
         break;
     }
@@ -149,7 +153,7 @@ async function initializePopup() {
     setResult(message.payload.message || "", message.payload.isError);
 
     // Update button state based on status
-    const isRunning = message.payload.status === "运行中...";
+    const isRunning = message.payload.status === i18n.statusRunning();
     setRunningState(isRunning);
   });
 
@@ -157,7 +161,7 @@ async function initializePopup() {
   async function ensureConfigured() {
     const settings = await loadSettings();
     if (!settings.api_key) {
-      throw new Error("请先在 Options 页填写 API Key");
+      throw new Error(i18n.pleaseConfigureApiKey());
     }
     return settings;
   }
@@ -169,9 +173,9 @@ async function initializePopup() {
   runButton.addEventListener("click", async () => {
     console.log("[Popup] Run button clicked");
     setRunningState(true);
-    setStatus("运行中...");
+    setStatus(i18n.statusRunning());
     setResult("");
-    broadcastStatus("运行中...", "正在请求 Azure/OpenAI");
+    broadcastStatus(i18n.statusRunning(), i18n.statusRunning());
 
     try {
       await ensureConfigured();
@@ -180,45 +184,45 @@ async function initializePopup() {
       // Check if task was cancelled
       if (response?.cancelled) {
         console.log("[Popup] Task was cancelled");
-        setStatus("已取消");
-        setResult("任务已取消");
+        setStatus(i18n.statusCancelled());
+        setResult(i18n.statusCancelled());
         setRunningState(false);
         return;
       }
 
       if (!response?.ok) {
-        throw new Error(response?.error || "未知错误");
+        throw new Error(response?.error || i18n.unknownError());
       }
 
       const data = response.result;
       const text = data?.output_text || data?.summary || JSON.stringify(data, null, 2);
-      const finalText = text || "未返回内容";
+      const finalText = text || i18n.summaryComplete();
       setResult(finalText);
-      setStatus("完成");
+      setStatus(i18n.statusComplete());
       setRunningState(false);
 
-      broadcastStatus("完成", finalText);
+      broadcastStatus(i18n.statusComplete(), finalText);
 
       chrome.notifications.create({
         type: "basic",
-        iconUrl: "src/icon128.png",
+        iconUrl: "icon128.png",
         title: "any2summary",
-        message: "摘要已完成",
+        message: i18n.summaryComplete(),
         contextMessage: finalText.slice(0, 80),
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error("[Popup] Error:", message);
-      setStatus("失败");
-      setResult(message, true);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error("[Popup] Error:", errorMessage);
+      setStatus(i18n.statusFailed());
+      setResult(errorMessage, true);
       setRunningState(false);
-      broadcastStatus("失败", message, true);
+      broadcastStatus(i18n.statusFailed(), errorMessage, true);
       chrome.notifications.create({
         type: "basic",
-        iconUrl: "src/icon128.png",
+        iconUrl: "icon128.png",
         title: "any2summary",
-        message: "摘要失败",
-        contextMessage: message.slice(0, 80),
+        message: i18n.statusFailed(),
+        contextMessage: errorMessage.slice(0, 80),
       });
     }
   });
@@ -231,10 +235,10 @@ async function initializePopup() {
         type: "CANCEL_TASK",
         tabId: currentTabId,
       });
-      setStatus("已取消");
-      setResult("任务已取消");
+      setStatus(i18n.statusCancelled());
+      setResult(i18n.statusCancelled());
       setRunningState(false);
-      broadcastStatus("已取消", "任务已取消");
+      broadcastStatus(i18n.statusCancelled(), i18n.statusCancelled());
     } catch (error) {
       console.error("[Popup] Cancel error:", error);
     }

@@ -9,6 +9,7 @@ import { summarizeUrl, inferDomainFromSummary } from "./summarize.js";
 import { saveSummaryAsMarkdown, saveTimelineAsMarkdown } from "./fileSaver.js";
 import { taskStateManager } from "./taskStateManager.js";
 import { getSummaryLengthConfig } from "./config.js";
+import { i18n } from "./i18n.js";
 
 // AbortController management for cancellable tasks
 const abortControllers = new Map(); // Map<tabId, AbortController>
@@ -112,11 +113,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       await taskStateManager.setState(tabId, {
         status: "cancelled",
-        message: "任务已取消",
+        message: i18n.statusCancelled(),
         isError: false,
         url: "",
       });
-      broadcastStatus(tabId, "已取消", "任务已取消");
+      broadcastStatus(tabId, i18n.statusCancelled(), i18n.statusCancelled());
     })();
 
     sendResponse({ ok: true });
@@ -135,7 +136,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.url) {
         console.error("[Background] Cannot get active tab URL");
-        sendResponse({ ok: false, error: "无法获取当前标签页 URL" });
+        sendResponse({ ok: false, error: i18n.cannotGetTabUrl() });
         return;
       }
 
@@ -146,11 +147,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       await taskStateManager.setState(tab.id, {
         status: "running",
-        message: "正在处理链接：" + tab.url,
+        message: i18n.processingUrl(tab.url),
         isError: false,
         url: tab.url,
       });
-      broadcastStatus(tab.id, "运行中...", "正在处理链接：" + tab.url);
+      broadcastStatus(tab.id, i18n.statusRunning(), i18n.processingUrl(tab.url));
       broadcastProgress(tab.id, 0.1, "检测内容类型...");
 
       const settings = await loadSettings();
@@ -182,11 +183,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       await taskStateManager.setState(tab.id, {
         status: "completed",
-        message: text || "摘要完成",
+        message: text || i18n.summaryComplete(),
         isError: false,
         url: tab.url,
       });
-      broadcastStatus(tab.id, "完成", text || "摘要完成");
+      broadcastStatus(tab.id, i18n.statusComplete(), text || i18n.summaryComplete());
 
       // 自动保存摘要到本地
       if (settings.auto_save_summary && text) {
@@ -254,7 +255,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // Check if this is an abort error
       if (error.name === "AbortError") {
         console.log("[Background] Task was cancelled");
-        sendResponse({ ok: false, error: "任务已取消", cancelled: true });
+        sendResponse({ ok: false, error: i18n.statusCancelled(), cancelled: true });
         return;
       }
 
@@ -268,7 +269,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           isError: true,
           url: tab?.url || "",
         });
-        broadcastStatus(tab.id, "失败", messageText, true);
+        broadcastStatus(tab.id, i18n.statusFailed(), messageText, true);
       }
       sendResponse({ ok: false, error: messageText });
     }
@@ -299,11 +300,11 @@ chrome.commands.onCommand.addListener(async (command) => {
 
     await taskStateManager.setState(tab.id, {
       status: "running",
-      message: "快捷键触发，处理中：" + tab.url,
+      message: i18n.shortcutTriggered(tab.url),
       isError: false,
       url: tab.url,
     });
-    broadcastStatus(tab.id, "运行中...", "快捷键触发，处理中：" + tab.url);
+    broadcastStatus(tab.id, i18n.statusRunning(), i18n.shortcutTriggered(tab.url));
 
     const settings = await loadSettings();
     console.log("[Background] Calling summarizeUrl via shortcut...");
@@ -330,11 +331,11 @@ chrome.commands.onCommand.addListener(async (command) => {
 
     await taskStateManager.setState(tab.id, {
       status: "completed",
-      message: text || "摘要完成",
+      message: text || i18n.summaryComplete(),
       isError: false,
       url: tab.url,
     });
-    broadcastStatus(tab.id, "完成", text || "摘要完成");
+    broadcastStatus(tab.id, i18n.statusComplete(), text || i18n.summaryComplete());
 
     // 自动保存摘要到本地
     if (settings.auto_save_summary && text) {
@@ -410,7 +411,7 @@ chrome.commands.onCommand.addListener(async (command) => {
         isError: true,
         url: tab?.url || "",
       });
-      broadcastStatus(tab.id, "失败", messageText, true);
+      broadcastStatus(tab.id, i18n.statusFailed(), messageText, true);
     }
   }
 });

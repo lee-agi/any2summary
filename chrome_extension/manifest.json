@@ -1,8 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "any2summary for Chrome",
-  "version": "0.1.0",
-  "description": "手动点击触发：读取当前标签页 URL，调用 Azure/OpenAI 生成摘要并在弹窗展示，可配置 API Key、端点与缓存策略。",
+  "name": "__MSG_extName__",
+  "short_name": "any2summary",
+  "version": "1.0.0",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
+  "homepage_url": "https://github.com/clzhang/any2summary",
   "action": {
     "default_popup": "src/popup.html",
     "default_title": "any2summary"

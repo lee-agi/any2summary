@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -161,20 +161,20 @@
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zM6 20V4h5v7h7v9H6z"/>
           <path d="M8 12h8v2H8zm0 4h8v2H8z"/>
         </svg>
-        摘要当前页面
+        <span data-i18n="summarizeButton">Summarize This Page</span>
       </button>
       <button id="cancel" class="md-button md-button-cancel" style="display: none;">
         <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
           <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
         </svg>
-        取消
+        <span data-i18n="cancelButton">Cancel</span>
       </button>
     </div>
     <div class="progress-container" id="progressContainer">
       <div class="progress-bar-wrapper">
         <div class="progress-bar" id="progressBar"></div>
       </div>
-      <div class="progress-label" id="progressLabel">准备中...</div>
+      <div class="progress-label" id="progressLabel" data-i18n="statusRunning">Running...</div>
     </div>
     <div id="status"></div>
     <div class="result" id="result"></div>
