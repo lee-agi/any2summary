@@ -523,6 +523,72 @@ class TestDomainMapping:
         assert "【blog.example.org】" in filename
 
 
+class TestSnakeCaseCompatibility:
+    """Test snake_case field name compatibility for server metadata.
+
+    The local server (server.py) now returns camelCase metadata,
+    but fileSaver.js should also handle snake_case as a fallback
+    for backward compatibility.
+    """
+
+    def test_snake_case_upload_date(self) -> None:
+        """Test that snake_case upload_date is recognized."""
+        filename = run_generate_filename(
+            "https://youtube.com/watch?v=test123",
+            "Test Video",
+            {"upload_date": "20240115"}  # snake_case
+        )
+        assert "2024-M01" in filename
+
+    def test_snake_case_publish_date(self) -> None:
+        """Test that snake_case publish_date is recognized."""
+        filename = run_generate_filename(
+            "https://youtube.com/watch?v=test123",
+            "Test Video",
+            {"publish_date": "20240315"}  # snake_case
+        )
+        assert "2024-M03" in filename
+
+    def test_camel_case_takes_priority(self) -> None:
+        """Test that camelCase takes priority over snake_case."""
+        filename = run_generate_filename(
+            "https://youtube.com/watch?v=test123",
+            "Test Video",
+            {
+                "publishDate": "20240515",  # camelCase (priority)
+                "publish_date": "20240115",  # snake_case (fallback)
+            }
+        )
+        # camelCase should take priority
+        assert "2024-M05" in filename
+
+    def test_upload_date_fallback_to_snake_case(self) -> None:
+        """Test uploadDate fallback to upload_date when camelCase is missing."""
+        filename = run_generate_filename(
+            "https://youtube.com/watch?v=test123",
+            "Test Video",
+            {
+                # No camelCase publishDate or uploadDate
+                "upload_date": "20240815",  # snake_case fallback
+            }
+        )
+        assert "2024-M08" in filename
+
+    def test_mixed_case_metadata_from_server(self) -> None:
+        """Test metadata that might come from different sources."""
+        filename = run_generate_filename(
+            "https://youtube.com/watch?v=test123",
+            "测试视频标题",
+            {
+                "title": "测试视频标题",
+                "uploadDate": "20241225",  # From local server (camelCase)
+            }
+        )
+        assert "【YouTube】" in filename
+        assert "2024-M12" in filename
+        assert "测试视频标题" in filename
+
+
 class TestCliCompatibility:
     """Test compatibility with cli.py naming conventions.
 

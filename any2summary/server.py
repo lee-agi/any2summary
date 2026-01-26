@@ -55,6 +55,48 @@ except ImportError:
     SummarizeRequest = None  # type: ignore
 
 
+def _convert_metadata_to_camel_case(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """将 metadata 字段名从 snake_case 转换为 camelCase。
+
+    这是为了与 Chrome 扩展 fileSaver.js 保持一致，后者期望 camelCase 字段名。
+
+    Args:
+        metadata: 原始 metadata 字典（yt-dlp 返回的 snake_case 格式）
+
+    Returns:
+        转换后的 camelCase 格式 metadata
+    """
+    if not metadata:
+        return {}
+
+    # 字段名映射表：snake_case -> camelCase
+    field_mapping = {
+        "title": "title",
+        "webpage_url": "webpageUrl",
+        "upload_date": "uploadDate",
+        "duration": "duration",
+        "channel": "channel",
+        "channel_id": "channelId",
+        "uploader": "uploader",
+        "description": "description",
+        "view_count": "viewCount",
+        "like_count": "likeCount",
+        "comment_count": "commentCount",
+    }
+
+    camel_metadata = {}
+    for snake_key, camel_key in field_mapping.items():
+        if snake_key in metadata:
+            camel_metadata[camel_key] = metadata[snake_key]
+
+    # 保留未映射的字段（原样复制）
+    for key, value in metadata.items():
+        if key not in field_mapping and key not in camel_metadata:
+            camel_metadata[key] = value
+
+    return camel_metadata
+
+
 def create_app() -> Any:
     """Create and configure the FastAPI application."""
     try:
@@ -121,10 +163,20 @@ def create_app() -> Any:
                 ),
             )
 
+            # 获取 video metadata（perform_azure_diarization 不返回 metadata）
+            # 这是为了确保 Chrome 扩展能获取正确的 title、domain 和 uploadDate
+            video_metadata = None
+            try:
+                video_metadata = cli._fetch_video_metadata(body.url)
+            except Exception as meta_exc:
+                _LOGGER.warning("Failed to fetch video metadata: %s", meta_exc)
+
+            camel_metadata = _convert_metadata_to_camel_case(video_metadata) if video_metadata else None
+
             return {
                 "speakers": result.get("speakers", []),
                 "transcript": result.get("transcript", []),
-                "metadata": result.get("metadata"),
+                "metadata": camel_metadata,
             }
 
         except RuntimeError as exc:
@@ -241,9 +293,11 @@ def create_app() -> Any:
                 lambda: cli._fetch_video_metadata(url),
             )
 
+            # 将 metadata 字段名转换为 camelCase（与 Chrome 扩展 fileSaver.js 保持一致）
+            camel_metadata = _convert_metadata_to_camel_case(metadata) if metadata else None
             return {
                 "segments": segments,
-                "metadata": metadata,
+                "metadata": camel_metadata,
             }
 
         except RuntimeError as exc:

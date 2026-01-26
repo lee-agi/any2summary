@@ -125,7 +125,33 @@ Chrome 扩展的文件命名逻辑与 CLI 保持一致：
 2. `generatedAt`（当前日期作为备选）
 3. 默认值 `1970-M01`
 
+### 本地服务器 Metadata 字段格式
+
+本地服务器（`server.py`）会将 yt-dlp 返回的 snake_case 字段名转换为 camelCase：
+
+| yt-dlp 字段 (snake_case) | 服务器返回 (camelCase) |
+|--------------------------|----------------------|
+| `upload_date` | `uploadDate` |
+| `webpage_url` | `webpageUrl` |
+| `channel_id` | `channelId` |
+| `view_count` | `viewCount` |
+| `like_count` | `likeCount` |
+
+**关键函数**：
+- `server.py:_convert_metadata_to_camel_case()` - 将 metadata 转换为 camelCase
+
+**fileSaver.js 兼容性**：
+- 同时支持 camelCase 和 snake_case 字段名
+- camelCase 优先级高于 snake_case
+
 ## 版本历史
+- v1.5.0: 本地服务器 Metadata 字段名修复
+  - `server.py` 添加 `_convert_metadata_to_camel_case()` 函数
+  - `/api/youtube/transcript` 端点返回 camelCase metadata
+  - `/api/transcribe` 端点添加 video metadata 获取并转换为 camelCase
+  - `fileSaver.js` 增加 snake_case 字段名兼容作为保险
+  - 修复本地服务器模式下文件名显示 "General" 和 "1970-M01" 的问题
+
 - v1.4.0: Chrome 扩展 YouTube Title 为空问题修复
   - `background.js` 添加 title fallback，空标题显示为 "未知标题"（与 CLI 一致）
   - `background.js` 清理标题中的特殊字符（`:`, `/`, `\`, `` ` ``）

@@ -229,12 +229,15 @@ function sanitizeSubdirectory(subdirectory) {
  *
  * @param {string} url - 页面 URL
  * @param {string} title - 页面标题
- * @param {Object} metadata - 元数据对象
- * @param {string} [metadata.publishDate] - 发布日期
- * @param {string} [metadata.uploadDate] - 上传日期（YouTube）
+ * @param {Object} metadata - 元数据对象（同时支持 camelCase 和 snake_case 字段名）
+ * @param {string} [metadata.publishDate] - 发布日期 (camelCase)
+ * @param {string} [metadata.publish_date] - 发布日期 (snake_case)
+ * @param {string} [metadata.uploadDate] - 上传日期 (camelCase)
+ * @param {string} [metadata.upload_date] - 上传日期 (snake_case)
  * @param {string} [metadata.category] - 内容分类
  * @param {string[]} [metadata.categories] - 内容分类数组
- * @param {string} [metadata.generatedAt] - 生成时间（备选日期，格式 YYYY-MM-DD）
+ * @param {string} [metadata.generatedAt] - 生成时间 (camelCase)
+ * @param {string} [metadata.generated_at] - 生成时间 (snake_case)
  * @returns {string} 生成的文件名
  */
 function generateFilename(url, title, metadata = {}) {
@@ -242,8 +245,11 @@ function generateFilename(url, title, metadata = {}) {
   const domain = extractDomain(url, metadata);
 
   // 2. 提取年月（优先使用 publishDate，其次 uploadDate，最后 generatedAt）
-  const publishDate = metadata.publishDate || metadata.uploadDate || "";
-  const generatedAt = metadata.generatedAt || "";
+  // 同时兼容 camelCase 和 snake_case 字段名（服务器端可能返回不同格式）
+  const publishDate =
+    metadata.publishDate || metadata.publish_date ||
+    metadata.uploadDate || metadata.upload_date || "";
+  const generatedAt = metadata.generatedAt || metadata.generated_at || "";
   const yearMonth = deriveYearMonth(publishDate, generatedAt);
 
   // 3. 清理标题（与 CLI 一致的策略）

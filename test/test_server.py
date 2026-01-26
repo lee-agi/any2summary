@@ -323,6 +323,161 @@ class TestYouTubeTranscriptEndpoint:
             assert "No transcript available" in response.text
 
 
+class TestMetadataCamelCaseConversion:
+    """Tests for metadata field name conversion from snake_case to camelCase."""
+
+    def test_convert_metadata_to_camel_case(self):
+        """Test that snake_case fields are converted to camelCase."""
+        from any2summary.server import _convert_metadata_to_camel_case
+
+        snake_case_metadata = {
+            "title": "Test Video",
+            "webpage_url": "https://www.youtube.com/watch?v=test123",
+            "upload_date": "20240115",
+            "duration": 300,
+            "channel": "Test Channel",
+            "channel_id": "UC123456",
+            "uploader": "Test Uploader",
+            "view_count": 1000,
+            "like_count": 100,
+        }
+
+        result = _convert_metadata_to_camel_case(snake_case_metadata)
+
+        # Check camelCase conversion
+        assert result["title"] == "Test Video"
+        assert result["webpageUrl"] == "https://www.youtube.com/watch?v=test123"
+        assert result["uploadDate"] == "20240115"
+        assert result["duration"] == 300
+        assert result["channel"] == "Test Channel"
+        assert result["channelId"] == "UC123456"
+        assert result["uploader"] == "Test Uploader"
+        assert result["viewCount"] == 1000
+        assert result["likeCount"] == 100
+
+        # Old snake_case keys should not exist
+        assert "webpage_url" not in result
+        assert "upload_date" not in result
+        assert "channel_id" not in result
+        assert "view_count" not in result
+        assert "like_count" not in result
+
+    def test_convert_metadata_preserves_unmapped_fields(self):
+        """Test that unmapped fields are preserved as-is."""
+        from any2summary.server import _convert_metadata_to_camel_case
+
+        metadata = {
+            "title": "Test",
+            "custom_field": "value",
+            "another_key": 123,
+        }
+
+        result = _convert_metadata_to_camel_case(metadata)
+
+        assert result["title"] == "Test"
+        assert result["custom_field"] == "value"
+        assert result["another_key"] == 123
+
+    def test_convert_metadata_handles_empty_dict(self):
+        """Test that empty dict returns empty dict."""
+        from any2summary.server import _convert_metadata_to_camel_case
+
+        result = _convert_metadata_to_camel_case({})
+        assert result == {}
+
+    def test_convert_metadata_handles_none(self):
+        """Test that None returns empty dict."""
+        from any2summary.server import _convert_metadata_to_camel_case
+
+        result = _convert_metadata_to_camel_case(None)
+        assert result == {}
+
+    def test_youtube_transcript_returns_camel_case_metadata(self):
+        """Test that /api/youtube/transcript returns camelCase metadata."""
+        from any2summary.server import create_app
+
+        app = create_app()
+        client = TestClient(app)
+
+        mock_segments = [{"start": 0.0, "end": 5.0, "text": "Test"}]
+        mock_metadata = {
+            "title": "Test Video",
+            "webpage_url": "https://www.youtube.com/watch?v=test123",
+            "upload_date": "20240115",
+        }
+
+        with patch("any2summary.cli.fetch_transcript_with_metadata", return_value=mock_segments):
+            with patch("any2summary.cli._fetch_video_metadata", return_value=mock_metadata):
+                response = client.get(
+                    "/api/youtube/transcript",
+                    params={"url": "https://www.youtube.com/watch?v=test123"},
+                )
+                assert response.status_code == 200
+
+                data = response.json()
+                # Should have camelCase keys
+                assert data["metadata"]["uploadDate"] == "20240115"
+                assert data["metadata"]["webpageUrl"] == "https://www.youtube.com/watch?v=test123"
+                # Should NOT have snake_case keys
+                assert "upload_date" not in data["metadata"]
+                assert "webpage_url" not in data["metadata"]
+
+    def test_transcribe_returns_camel_case_metadata(self):
+        """Test that /api/transcribe returns camelCase metadata."""
+        from any2summary.server import create_app
+
+        app = create_app()
+        client = TestClient(app)
+
+        mock_transcribe_result = {
+            "speakers": [{"start": 0.0, "end": 5.0, "speaker": "Speaker1"}],
+            "transcript": [{"start": 0.0, "end": 5.0, "text": "Hello", "speaker": "Speaker1"}],
+        }
+        mock_metadata = {
+            "title": "Test Video",
+            "webpage_url": "https://www.youtube.com/watch?v=test123",
+            "upload_date": "20240115",
+        }
+
+        with patch("any2summary.cli.perform_azure_diarization", return_value=mock_transcribe_result):
+            with patch("any2summary.cli._fetch_video_metadata", return_value=mock_metadata):
+                response = client.post(
+                    "/api/transcribe",
+                    json={"url": "https://www.youtube.com/watch?v=test123", "language": "en"},
+                )
+                assert response.status_code == 200
+
+                data = response.json()
+                # Should have metadata with camelCase keys
+                assert data["metadata"] is not None
+                assert data["metadata"]["title"] == "Test Video"
+                assert data["metadata"]["uploadDate"] == "20240115"
+                assert data["metadata"]["webpageUrl"] == "https://www.youtube.com/watch?v=test123"
+
+    def test_transcribe_handles_metadata_fetch_failure(self):
+        """Test that /api/transcribe handles metadata fetch failure gracefully."""
+        from any2summary.server import create_app
+
+        app = create_app()
+        client = TestClient(app)
+
+        mock_transcribe_result = {
+            "speakers": [],
+            "transcript": [{"start": 0.0, "end": 5.0, "text": "Hello"}],
+        }
+
+        with patch("any2summary.cli.perform_azure_diarization", return_value=mock_transcribe_result):
+            with patch("any2summary.cli._fetch_video_metadata", side_effect=Exception("Network error")):
+                response = client.post(
+                    "/api/transcribe",
+                    json={"url": "https://www.youtube.com/watch?v=test123", "language": "en"},
+                )
+                # Should still succeed but with null metadata
+                assert response.status_code == 200
+                data = response.json()
+                assert data["metadata"] is None
+
+
 class TestCLIServeCommand:
     """Tests for the CLI serve subcommand."""
 

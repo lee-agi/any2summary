@@ -74,8 +74,13 @@ any2summary serve --reload
 | 端点 | 方法 | 功能 |
 |------|------|------|
 | `/api/health` | GET | 健康检查，返回服务状态和可用功能 |
-| `/api/transcribe` | POST | 音频转写（调用 Azure diarization） |
+| `/api/transcribe` | POST | 音频转写（调用 Azure diarization），返回 camelCase metadata |
 | `/api/summarize` | POST | 完整摘要流程（转写 + AI 总结） |
+| `/api/youtube/transcript` | GET | 获取 YouTube 字幕，返回 camelCase metadata |
+
+**Metadata 字段格式：**
+- 服务器返回的 metadata 使用 camelCase 格式（如 `uploadDate`、`webpageUrl`）
+- Chrome 扩展可直接使用这些字段生成正确的文件名
 
 **Chrome 扩展配置：**
 1. 打开扩展 Options 页面
