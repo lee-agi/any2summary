@@ -76,4 +76,12 @@ export const i18n = {
   serverConnectSuccess: (version, services) =>
     getMessage("serverConnectSuccess", [version, services]),
   serverConnectFailed: () => getMessage("serverConnectFailed"),
+
+  // Cache management messages
+  cacheCleared: () => getMessage("cacheCleared"),
+
+  // Server status indicator messages
+  serverStatusOnline: () => getMessage("serverStatusOnline"),
+  serverStatusOffline: () => getMessage("serverStatusOffline"),
+  serverStatusChecking: () => getMessage("serverStatusChecking"),
 };

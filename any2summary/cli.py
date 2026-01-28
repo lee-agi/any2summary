@@ -216,12 +216,68 @@ def _resolve_file_cache_dir(file_path: str) -> str:
     return os.path.join(tempfile.gettempdir(), "any2summary_cache", cache_name)
 
 
-def _extract_audio_from_video(video_path: str, output_dir: str) -> str:
+def _get_video_duration_ms(video_path: str) -> int:
+    """Get video duration in milliseconds using ffprobe.
+
+    Args:
+        video_path: Path to video file.
+
+    Returns:
+        Duration in milliseconds, or 0 if unable to determine.
+    """
+    ffprobe_path = shutil.which("ffprobe")
+    if not ffprobe_path:
+        return 0
+
+    try:
+        result = subprocess.run(
+            [
+                ffprobe_path,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            duration_sec = float(result.stdout.strip())
+            return int(duration_sec * 1000)
+    except Exception:
+        pass
+    return 0
+
+
+def _parse_ffmpeg_progress(line: str) -> int | None:
+    """Parse out_time_ms from ffmpeg progress output.
+
+    Args:
+        line: A line from ffmpeg -progress output.
+
+    Returns:
+        Time in milliseconds, or None if not a time line.
+    """
+    if line.startswith("out_time_ms="):
+        try:
+            return int(line.split("=", 1)[1].strip())
+        except (ValueError, IndexError):
+            pass
+    return None
+
+
+def _extract_audio_from_video(
+    video_path: str,
+    output_dir: str,
+    show_progress: bool = True,
+) -> str:
     """Extract audio track from video file using ffmpeg.
 
     Args:
         video_path: Path to video file.
         output_dir: Directory to save extracted audio.
+        show_progress: Whether to show progress bar.
 
     Returns:
         Path to extracted audio file.
@@ -239,6 +295,9 @@ def _extract_audio_from_video(video_path: str, output_dir: str) -> str:
     if not ffmpeg_path:
         raise RuntimeError("ffmpeg 未安装。请安装 ffmpeg: brew install ffmpeg")
 
+    # Get video duration for progress calculation
+    total_duration_ms = _get_video_duration_ms(video_path) if show_progress else 0
+
     cmd = [
         ffmpeg_path,
         "-i", video_path,
@@ -247,18 +306,57 @@ def _extract_audio_from_video(video_path: str, output_dir: str) -> str:
         "-ar", "16000",  # 16kHz sample rate
         "-ac", "1",  # Mono
         "-y",  # Overwrite
-        output_path,
     ]
 
+    # Add progress output if we can show it
+    if show_progress and total_duration_ms > 0:
+        cmd.extend(["-progress", "pipe:1", "-nostats"])
+
+    cmd.append(output_path)
+
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg 提取音频失败: {result.stderr[:200]}")
+        if show_progress and total_duration_ms > 0:
+            # Run with progress monitoring
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            video_name = os.path.basename(video_path)[:30]
+
+            while True:
+                if process.stdout is None:
+                    break
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+
+                current_ms = _parse_ffmpeg_progress(line)
+                if current_ms is not None:
+                    ratio = min(current_ms / total_duration_ms, 1.0)
+                    _update_progress_bar(ratio, f"提取音频: {video_name}")
+
+            # Wait for process to complete
+            _, stderr = process.communicate(timeout=300)
+
+            # Show completion
+            _update_progress_bar(1.0, f"提取音频: {video_name}")
+
+            if process.returncode != 0:
+                raise RuntimeError(f"ffmpeg 提取音频失败: {stderr[:200] if stderr else 'unknown error'}")
+        else:
+            # Run without progress (original behavior)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"ffmpeg 提取音频失败: {result.stderr[:200]}")
+
     except subprocess.TimeoutExpired:
         raise RuntimeError("ffmpeg 提取音频超时")
 
@@ -757,35 +855,100 @@ def _run_doctor_command(argv: Sequence[str]) -> int:
     """Run health check diagnostics for any2summary dependencies.
 
     Args:
-        argv: Arguments for the doctor subcommand (currently unused).
+        argv: Arguments for the doctor subcommand.
 
     Returns:
         Process exit code. 0 if all checks pass, 1 if any critical check fails.
     """
+    from any2summary.errors import (
+        ErrorCode,
+        get_error_info,
+        map_http_status_to_error,
+        create_package_error,
+    )
+
     parser = argparse.ArgumentParser(
         prog="any2summary doctor",
         description="Check system dependencies and service connectivity.",
     )
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Attempt to automatically fix recoverable issues",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output results in JSON format for programmatic use",
+    )
+    args = parser.parse_args(argv)
 
-    print("🩺 any2summary 健康检查\n")
+    # Track issues for potential auto-fix and JSON output
+    issues: list[dict] = []
+    fixes_attempted = 0
+    fixes_succeeded = 0
 
     checks_passed = 0
     checks_failed = 0
 
-    def _check(name: str, condition: bool, error_msg: str = "") -> bool:
+    def _check(
+        name: str,
+        condition: bool,
+        error_msg: str = "",
+        error_code: ErrorCode | None = None,
+    ) -> bool:
         nonlocal checks_passed, checks_failed
         if condition:
-            print(f"  ✓ {name}")
+            if not args.json:
+                print(f"  ✓ {name}")
             checks_passed += 1
             return True
         else:
-            msg = f"  ✗ {name}"
-            if error_msg:
-                msg += f" - {error_msg}"
-            print(msg)
+            if not args.json:
+                msg = f"  ✗ {name}"
+                if error_msg:
+                    msg += f" - {error_msg}"
+                print(msg)
             checks_failed += 1
+
+            # Track issue for --fix and --json
+            if error_code:
+                error_info = get_error_info(error_code)
+                issues.append({
+                    "code": int(error_code),
+                    "name": name,
+                    "message": error_info.message,
+                    "suggestion": error_info.suggestion,
+                    "auto_fixable": error_info.auto_fix is not None,
+                })
             return False
+
+    def _try_fix(error_code: ErrorCode) -> bool:
+        """Attempt to fix an issue if --fix is enabled."""
+        nonlocal fixes_attempted, fixes_succeeded
+        if not args.fix:
+            return False
+
+        error_info = get_error_info(error_code)
+        if error_info.auto_fix is None:
+            return False
+
+        fixes_attempted += 1
+        if not args.json:
+            print(f"    🔧 尝试自动修复...")
+
+        success = error_info.auto_fix()
+        if success:
+            fixes_succeeded += 1
+            if not args.json:
+                print(f"    ✅ 修复成功")
+        else:
+            if not args.json:
+                print(f"    ❌ 修复失败")
+        return success
+
+    if not args.json:
+        print("🩺 any2summary 健康检查\n")
 
     # 1. Python version check
     py_version = sys.version_info
@@ -794,6 +957,7 @@ def _run_doctor_command(argv: Sequence[str]) -> int:
         f"Python 版本 ({py_version.major}.{py_version.minor}.{py_version.micro})",
         py_ok,
         "需要 Python >= 3.10",
+        ErrorCode.PYTHON_VERSION_TOO_OLD if not py_ok else None,
     )
 
     # 2. ffmpeg check
@@ -813,7 +977,13 @@ def _run_doctor_command(argv: Sequence[str]) -> int:
         except Exception:
             pass
     ffmpeg_info = f"ffmpeg ({ffmpeg_version})" if ffmpeg_version else "ffmpeg"
-    _check(ffmpeg_info, ffmpeg_path is not None, "请安装 ffmpeg: brew install ffmpeg")
+    if not _check(
+        ffmpeg_info,
+        ffmpeg_path is not None,
+        "请安装 ffmpeg: brew install ffmpeg",
+        ErrorCode.FFMPEG_NOT_INSTALLED if not ffmpeg_path else None,
+    ):
+        _try_fix(ErrorCode.FFMPEG_NOT_INSTALLED)
 
     # 3. yt-dlp check
     ytdlp_path = shutil.which("yt-dlp")
@@ -830,10 +1000,17 @@ def _run_doctor_command(argv: Sequence[str]) -> int:
         except Exception:
             pass
     ytdlp_info = f"yt-dlp ({ytdlp_version})" if ytdlp_version else "yt-dlp"
-    _check(ytdlp_info, ytdlp_path is not None, "请安装 yt-dlp: pip install yt-dlp")
+    if not _check(
+        ytdlp_info,
+        ytdlp_path is not None,
+        "请安装 yt-dlp: pip install yt-dlp",
+        ErrorCode.YTDLP_NOT_INSTALLED if not ytdlp_path else None,
+    ):
+        _try_fix(ErrorCode.YTDLP_NOT_INSTALLED)
 
     # 4. Python packages check
-    print("\n  Python 依赖包:")
+    if not args.json:
+        print("\n  Python 依赖包:")
     required_packages = [
         ("numpy", "numpy"),
         ("httpx", "httpx"),
@@ -846,10 +1023,28 @@ def _run_doctor_command(argv: Sequence[str]) -> int:
             __import__(module_name)
             _check(f"    {package_name}", True)
         except ImportError:
-            _check(f"    {package_name}", False, f"pip install {package_name}")
+            pkg_error = create_package_error(module_name, package_name)
+            if not _check(
+                f"    {package_name}",
+                False,
+                f"pip install {package_name}",
+                ErrorCode.PACKAGE_MISSING,
+            ):
+                if args.fix and pkg_error.auto_fix:
+                    fixes_attempted += 1
+                    if not args.json:
+                        print(f"      🔧 尝试安装 {package_name}...")
+                    if pkg_error.auto_fix():
+                        fixes_succeeded += 1
+                        if not args.json:
+                            print(f"      ✅ 安装成功")
+                    else:
+                        if not args.json:
+                            print(f"      ❌ 安装失败")
 
     # 5. Optional packages
-    print("\n  可选依赖包:")
+    if not args.json:
+        print("\n  可选依赖包:")
     optional_packages = [
         ("rich", "rich", "进度条美化"),
         ("pdfplumber", "pdfplumber", "PDF 文件处理"),
@@ -858,46 +1053,64 @@ def _run_doctor_command(argv: Sequence[str]) -> int:
     for module_name, package_name, description in optional_packages:
         try:
             __import__(module_name)
-            print(f"  ✓ {package_name} ({description})")
+            if not args.json:
+                print(f"  ✓ {package_name} ({description})")
         except ImportError:
-            print(f"  ○ {package_name} ({description}) - 未安装")
+            if not args.json:
+                print(f"  ○ {package_name} ({description}) - 未安装")
 
     # 6. .env file check
-    print("\n  配置文件:")
+    if not args.json:
+        print("\n  配置文件:")
     env_path = Path(".env")
     env_exists = env_path.is_file()
-    _check(".env 文件", env_exists, "运行 `any2summary init` 创建配置文件")
+    if not _check(
+        ".env 文件",
+        env_exists,
+        "运行 `any2summary init` 创建配置文件",
+        ErrorCode.ENV_FILE_MISSING if not env_exists else None,
+    ):
+        _try_fix(ErrorCode.ENV_FILE_MISSING)
 
     # 7. Environment variables check
-    print("\n  环境变量:")
+    if not args.json:
+        print("\n  环境变量:")
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
 
+    endpoint_valid = azure_endpoint is not None and azure_endpoint.strip() != ""
+    key_valid = azure_key is not None and azure_key.strip() != ""
+
     _check(
         "AZURE_OPENAI_ENDPOINT",
-        azure_endpoint is not None and azure_endpoint.strip() != "",
+        endpoint_valid,
         "未设置",
+        ErrorCode.AZURE_ENDPOINT_MISSING if not endpoint_valid else None,
     )
     _check(
         "AZURE_OPENAI_API_KEY",
-        azure_key is not None and azure_key.strip() != "",
+        key_valid,
         "未设置",
+        ErrorCode.AZURE_KEY_MISSING if not key_valid else None,
     )
 
     # Optional deployment names
     transcription_deployment = os.getenv("AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT")
     summary_deployment = os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT")
-    if transcription_deployment:
-        print(f"  ✓ AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT = {transcription_deployment}")
-    else:
-        print("  ○ AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT - 未设置（将使用默认值）")
-    if summary_deployment:
-        print(f"  ✓ AZURE_OPENAI_SUMMARY_DEPLOYMENT = {summary_deployment}")
-    else:
-        print("  ○ AZURE_OPENAI_SUMMARY_DEPLOYMENT - 未设置（将使用默认值）")
+    if not args.json:
+        if transcription_deployment:
+            print(f"  ✓ AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT = {transcription_deployment}")
+        else:
+            print("  ○ AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT - 未设置（将使用默认值）")
+        if summary_deployment:
+            print(f"  ✓ AZURE_OPENAI_SUMMARY_DEPLOYMENT = {summary_deployment}")
+        else:
+            print("  ○ AZURE_OPENAI_SUMMARY_DEPLOYMENT - 未设置（将使用默认值）")
 
     # 8. Azure connectivity test
-    print("\n  Azure 连通性:")
+    if not args.json:
+        print("\n  Azure 连通性:")
+    azure_status_code = None
     if azure_endpoint and azure_key:
         try:
             if _HTTPX_AVAILABLE and httpx is not None:
@@ -908,39 +1121,92 @@ def _run_doctor_command(argv: Sequence[str]) -> int:
                     test_url,
                     headers={"api-key": azure_key},
                 )
-                if response.status_code in (200, 401, 403):
-                    # 200 = success, 401/403 = auth issue but endpoint reachable
+                azure_status_code = response.status_code
+                if response.status_code == 200:
                     _check("Azure OpenAI 端点可达", True)
+                elif response.status_code in (401, 403):
+                    # Auth issue - endpoint reachable but key invalid
+                    error_code = map_http_status_to_error(response.status_code)
+                    _check(
+                        "Azure OpenAI 认证",
+                        False,
+                        f"HTTP {response.status_code} - API 密钥无效或权限不足",
+                        error_code,
+                    )
                 else:
+                    error_code = map_http_status_to_error(response.status_code)
                     _check(
                         "Azure OpenAI 端点",
                         False,
                         f"HTTP {response.status_code}",
+                        error_code,
                     )
             else:
-                print("  ○ Azure 连通性测试 - httpx 不可用，跳过")
+                if not args.json:
+                    print("  ○ Azure 连通性测试 - httpx 不可用，跳过")
         except Exception as exc:
-            _check("Azure OpenAI 端点可达", False, str(exc)[:50])
+            _check(
+                "Azure OpenAI 端点可达",
+                False,
+                str(exc)[:50],
+                ErrorCode.AZURE_UNREACHABLE,
+            )
     else:
-        print("  ○ Azure 连通性测试 - 跳过（缺少凭据）")
+        if not args.json:
+            print("  ○ Azure 连通性测试 - 跳过（缺少凭据）")
 
     # 9. Cache directory check
-    print("\n  缓存目录:")
+    if not args.json:
+        print("\n  缓存目录:")
     cache_dir = Path(tempfile.gettempdir()) / "any2summary_cache"
     cache_exists = cache_dir.exists()
     if cache_exists:
         _check(f"缓存目录 ({cache_dir})", True)
     else:
-        print(f"  ○ 缓存目录 ({cache_dir}) - 尚未创建")
+        if not args.json:
+            print(f"  ○ 缓存目录 ({cache_dir}) - 尚未创建")
 
     # Summary
-    print("\n" + "─" * 50)
     total = checks_passed + checks_failed
+
+    # JSON output mode
+    if args.json:
+        import json
+        result = {
+            "status": "ok" if checks_failed == 0 else "failed",
+            "checks_passed": checks_passed,
+            "checks_failed": checks_failed,
+            "total_checks": total,
+            "issues": issues,
+            "fixes_attempted": fixes_attempted,
+            "fixes_succeeded": fixes_succeeded,
+        }
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if checks_failed == 0 else 1
+
+    # Normal output summary
+    print("\n" + "─" * 50)
     if checks_failed == 0:
         print(f"✅ 所有检查通过 ({checks_passed}/{total})")
         return 0
     else:
         print(f"⚠️  {checks_failed} 项检查未通过，{checks_passed} 项通过")
+
+        # Show fix summary if --fix was used
+        if args.fix and fixes_attempted > 0:
+            print(f"\n🔧 自动修复：{fixes_succeeded}/{fixes_attempted} 项成功")
+
+        # Show suggestions for remaining issues
+        if issues:
+            print("\n💡 修复建议：")
+            for issue in issues[:5]:  # Show at most 5 suggestions
+                if issue.get("auto_fixable") and not args.fix:
+                    print(f"   • [{issue['code']}] {issue['message']}")
+                    print(f"     运行 `any2summary doctor --fix` 可自动修复")
+                else:
+                    print(f"   • [{issue['code']}] {issue['message']}")
+                    print(f"     {issue['suggestion']}")
+
         print("\n💡 提示：运行 `any2summary init` 可以快速配置 Azure 凭据")
         return 1
 
@@ -1300,8 +1566,19 @@ def _output_local_file_results(
 
 
 def _run_multiple(args: argparse.Namespace, urls: Sequence[str]) -> int:
+    """Run multiple URLs in parallel with progress tracking.
+
+    Args:
+        args: Parsed command-line arguments.
+        urls: Sequence of URLs to process.
+
+    Returns:
+        Exit code (0 if all succeeded, 1 if any failed).
+    """
     clones = [_clone_args(args, url) for url in urls]
     max_workers = max(1, min(len(clones), os.cpu_count() or len(clones)))
+    total = len(clones)
+    completed = 0
 
     results: List[Tuple[int, str, int, str, Optional[str]]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1309,6 +1586,9 @@ def _run_multiple(args: argparse.Namespace, urls: Sequence[str]) -> int:
         for index, clone in enumerate(clones):
             future = executor.submit(_run_single_with_capture, clone)
             future_map[future] = (index, clone.url)
+
+        # Show initial progress
+        _update_progress_bar(0.0, f"批量处理: 0/{total}")
 
         for future in concurrent.futures.as_completed(future_map):
             index, url = future_map[future]
@@ -1320,6 +1600,13 @@ def _run_multiple(args: argparse.Namespace, urls: Sequence[str]) -> int:
                 error = str(exc)
             error_message = str(error) if error else None
             results.append((index, url, exit_code, output, error_message))
+
+            # Update progress
+            completed += 1
+            _update_progress_bar(
+                completed / total,
+                f"批量处理: {completed}/{total}",
+            )
 
     results.sort(key=lambda item: item[0])
     final_exit_code = 0
@@ -1814,6 +2101,8 @@ def perform_azure_diarization(
         A mapping containing `speakers` and `transcript` lists.
     """
 
+    _LOGGER.info("[Diarization] Starting diarization for: %s", video_url)
+
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     azure_api_version = "2025-03-01-preview"
@@ -1822,14 +2111,17 @@ def perform_azure_diarization(
         or "gpt-4o-transcribe-diarize"
     )
     if not azure_key or not azure_endpoint:
+        _LOGGER.error("[Diarization] Azure credentials missing")
         raise RuntimeError(
             "Azure OpenAI 凭据缺失。请设置 AZURE_OPENAI_API_KEY与 AZURE_OPENAI_ENDPOINT。"
         )
 
     cache_directory = _resolve_video_cache_dir(video_url)
     cache_path = _diarization_cache_path(cache_directory)
+    _LOGGER.info("[Diarization] Checking cache at: %s", cache_path)
     cached_payload = _load_cached_diarization(cache_path)
     if cached_payload is not None:
+        _LOGGER.info("[Diarization] Using cached diarization result")
         return cached_payload
 
     try:
@@ -1839,12 +2131,18 @@ def perform_azure_diarization(
             "openai 库未安装。请执行 `pip install openai`."
         ) from exc
 
+    _LOGGER.info("[Diarization] Preparing audio cache...")
     wav_path = _prepare_audio_cache(video_url)
+    _LOGGER.info("[Diarization] Audio cached at: %s", wav_path)
+
+    _LOGGER.info("[Diarization] Splitting audio into segments...")
     segment_paths = _ensure_audio_segments(wav_path)
     if not segment_paths:
+        _LOGGER.error("[Diarization] Audio segmentation failed")
         raise RuntimeError(
             "音频缓存文件不存在或生成失败，请确认 ffmpeg 可用。"
         )
+    _LOGGER.info("[Diarization] Audio split into %d segments", len(segment_paths))
 
     segment_durations: List[float] = []
     for path in segment_paths:
@@ -1956,6 +2254,7 @@ def perform_azure_diarization(
             ),
         )
 
+    _LOGGER.info("[Diarization] Starting Azure API transcription loop...")
     for index, segment_path in enumerate(segment_paths, start=1):
         segment_duration = (
             segment_durations[index - 1]
@@ -1963,7 +2262,10 @@ def perform_azure_diarization(
             else 0.0
         )
         if segments_done >= index:
+            _LOGGER.debug("[Diarization] Skipping segment %d (already processed)", index)
             continue
+        _LOGGER.info("[Diarization] Processing segment %d/%d: %s",
+                     index, len(segment_paths), os.path.basename(segment_path))
         max_attempts = 2
         attempt = 1
         stream_tokens = 0.0
@@ -2240,6 +2542,9 @@ def perform_azure_diarization(
         "speakers": merged_entries,
         "transcript": transcript_segments,
     }
+    _LOGGER.info("[Diarization] Complete: %d speaker segments, %d transcript segments",
+                 len(merged_entries), len(transcript_segments))
+    _LOGGER.info("[Diarization] Writing cache to: %s", cache_path)
     _write_diarization_cache(cache_path, result_payload)
     if os.path.exists(checkpoint_path):
         try:
@@ -2247,6 +2552,7 @@ def perform_azure_diarization(
         except OSError:
             pass
 
+    _LOGGER.info("[Diarization] Successfully completed diarization")
     return result_payload
 
 
@@ -4398,9 +4704,22 @@ def _split_wav_file_smart(
 
 
 def _split_wav_file(
-    wav_path: str, directory: str, base_name: str
+    wav_path: str,
+    directory: str,
+    base_name: str,
+    show_progress: bool = True,
 ) -> List[str]:
-    """Split WAV file into multiple segments using wave module."""
+    """Split WAV file into multiple segments using wave module.
+
+    Args:
+        wav_path: Path to the source WAV file.
+        directory: Directory to save split segments.
+        base_name: Base name for segment files.
+        show_progress: Whether to show progress bar.
+
+    Returns:
+        List of paths to segment files.
+    """
 
     segment_paths: List[str] = []
 
@@ -4415,7 +4734,14 @@ def _split_wav_file(
 
             total_frames = source.getnframes()
             frames_remaining = total_frames
+            frames_processed = 0
             segment_index = 0
+
+            # Calculate estimated total segments for progress
+            estimated_segments = max(1, (total_frames + frames_per_segment - 1) // frames_per_segment)
+
+            if show_progress and total_frames > 0:
+                _update_progress_bar(0.0, f"分割音频: 0/{estimated_segments}")
 
             while frames_remaining > 0:
                 segment_index += 1
@@ -4438,9 +4764,19 @@ def _split_wav_file(
                         written += frames_to_read
 
                     frames_remaining -= written
+                    frames_processed += written
 
                 if os.path.exists(segment_path) and os.path.getsize(segment_path) > 0:
                     segment_paths.append(segment_path)
+
+                # Update progress after each segment
+                if show_progress and total_frames > 0:
+                    ratio = min(frames_processed / total_frames, 1.0)
+                    _update_progress_bar(ratio, f"分割音频: {segment_index}/{estimated_segments}")
+
+            # Show completion
+            if show_progress and total_frames > 0:
+                _update_progress_bar(1.0, f"分割音频: {segment_index}/{segment_index}")
 
             if not segment_paths:
                 return [wav_path]

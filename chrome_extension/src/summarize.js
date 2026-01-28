@@ -524,8 +524,34 @@ export async function summarizeUrl(targetUrl, settings, options = {}) {
       throw error;
     }
 
-    console.warn("[Summarize] Content extraction failed, falling back to generic URL:", error.message);
-    // Fallback to generic URL processing
+    // Log detailed error for debugging
+    console.error("[Summarize] Content extraction failed:", error);
+
+    // Check if this is an API/service error that shouldn't be silently recovered
+    const errorMessage = error.message || "";
+    const isApiError =
+      errorMessage.includes("Azure") ||
+      errorMessage.includes("API") ||
+      errorMessage.includes("transcription") ||
+      errorMessage.includes("diarization") ||
+      errorMessage.includes("本地服务") ||
+      errorMessage.includes("转写失败") ||
+      errorMessage.includes("凭据") ||
+      /:\s*4\d{2}\s/.test(errorMessage) ||  // Match HTTP 4xx errors in message
+      /:\s*5\d{2}\s/.test(errorMessage) ||  // Match HTTP 5xx errors in message
+      error.status === 400 ||
+      error.status === 401 ||
+      error.status === 403 ||
+      error.status === 500;
+
+    if (isApiError) {
+      // API errors should not be silently swallowed - re-throw to show user
+      console.error("[Summarize] API error detected, not falling back:", errorMessage);
+      throw error;
+    }
+
+    // Only fall back to generic URL for network/parsing errors
+    console.warn("[Summarize] Network/parsing error, falling back to generic URL:", errorMessage);
     result = await processGenericUrl(targetUrl, settings, options);
   }
 

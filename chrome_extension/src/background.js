@@ -261,16 +261,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       const messageText = error instanceof Error ? error.message : String(error);
       console.error("[Background] Error:", messageText);
-      // Use tab.id if available, otherwise skip state update
-      if (tab?.id) {
-        await taskStateManager.setState(tab.id, {
-          status: "failed",
-          message: messageText,
-          isError: true,
-          url: tab?.url || "",
-        });
-        broadcastStatus(tab.id, i18n.statusFailed(), messageText, true);
+
+      // Use try-catch to ensure sendResponse is always called
+      try {
+        if (tab?.id) {
+          await taskStateManager.setState(tab.id, {
+            status: "failed",
+            message: messageText,
+            isError: true,
+            url: tab?.url || "",
+          });
+          broadcastStatus(tab.id, i18n.statusFailed(), messageText, true);
+        }
+      } catch (stateError) {
+        console.error("[Background] Failed to update state:", stateError);
       }
+
+      // Always call sendResponse to close the message channel properly
       sendResponse({ ok: false, error: messageText });
     }
   })();

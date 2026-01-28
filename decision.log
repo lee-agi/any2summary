@@ -298,3 +298,23 @@
 - 重名处理差异：Chrome 使用 `conflictAction: 'uniquify'` 添加 `(1)` 后缀，cli.py 使用时间戳
 - 新增测试用例：`TestDomainMapping`（5 个）、`TestCliCompatibility`（3 个）
 - 修改文件：`fileSaver.js`、`background.js`、`test_filesaver_filename.py`、`README.md`
+
+---
+
+## 2026-01-27: 版本号管理规范
+
+**Decision:** 每次增加 feature 都必须增加版本号
+
+**Why:** 用户明确要求，便于追踪功能变更和版本历史
+
+**Alternatives:**
+- 仅在重大版本发布时更新版本号（不利于细粒度追踪）
+- 使用 git tag 替代版本号（开发者友好但用户不直观）
+
+**Consequences:**
+- 每次功能新增需同步更新 `CLAUDE.md` 中的版本历史
+- 版本号遵循语义化版本规范（SemVer）：
+  - 主版本号（MAJOR）：不兼容的 API 修改
+  - 次版本号（MINOR）：向下兼容的功能新增
+  - 修订号（PATCH）：向下兼容的 Bug 修复
+- 更新位置：`CLAUDE.md` 版本历史、`pyproject.toml`（如有需要）、`chrome_extension/manifest.json`（如有需要）

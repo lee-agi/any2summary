@@ -311,6 +311,144 @@
           gap: 0;
         }
       }
+
+      /* 折叠式配置区块 */
+      .collapsible-section {
+        margin-top: 24px;
+      }
+
+      .collapsible-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        background: var(--card-bg);
+        border-radius: var(--border-radius);
+        box-shadow: var(--shadow);
+        cursor: pointer;
+        user-select: none;
+        transition: background 0.2s;
+      }
+
+      .collapsible-header:hover {
+        background: var(--bg-color);
+      }
+
+      .collapsible-header h2 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 500;
+        color: var(--text-color);
+      }
+
+      .collapsible-icon {
+        font-size: 12px;
+        color: var(--text-secondary);
+        transition: transform 0.3s;
+      }
+
+      .collapsible-section.expanded .collapsible-icon {
+        transform: rotate(180deg);
+      }
+
+      .collapsible-content {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.3s ease-out;
+      }
+
+      .collapsible-section.expanded .collapsible-content {
+        max-height: 2000px;
+      }
+
+      .collapsible-content .card {
+        margin-top: 12px;
+        margin-bottom: 0;
+      }
+
+      .collapsible-content .card:first-child {
+        border-top-left-radius: 0;
+        border-top-right-radius: 0;
+      }
+
+      /* 连接状态指示器 */
+      .status-indicator {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-left: 8px;
+        vertical-align: middle;
+      }
+
+      .status-indicator.online {
+        background-color: var(--success-color);
+        box-shadow: 0 0 4px var(--success-color);
+      }
+
+      .status-indicator.offline {
+        background-color: var(--error-color);
+        box-shadow: 0 0 4px var(--error-color);
+      }
+
+      .status-indicator.checking {
+        background-color: var(--warning-color);
+        box-shadow: 0 0 4px var(--warning-color);
+        animation: pulse 1s infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+
+      /* 缓存管理 */
+      .cache-management {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px;
+        background: var(--bg-color);
+        border-radius: var(--border-radius);
+        margin-top: 16px;
+      }
+
+      .cache-info {
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
+
+      .cache-info strong {
+        color: var(--text-color);
+      }
+
+      .btn-danger {
+        background-color: var(--error-color);
+        color: white;
+      }
+
+      .btn-danger:hover {
+        background-color: #c5221f;
+        box-shadow: var(--shadow-hover);
+      }
+
+      /* Select 样式 */
+      select {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius);
+        font-size: 14px;
+        background: var(--card-bg);
+        color: var(--text-color);
+        cursor: pointer;
+      }
+
+      select:focus {
+        outline: none;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+      }
     </style>
   </head>
   <body>
@@ -350,34 +488,12 @@
         </div>
       </div>
 
-      <!-- 缓存设置 -->
-      <div class="card">
-        <h2 class="card-title" data-i18n="cacheTitle">Cache Settings</h2>
-        <div class="toggle-group">
-          <div class="toggle-label">
-            <span class="toggle-title" data-i18n="cacheEnabledTitle">Enable Cache</span>
-            <span class="toggle-description" data-i18n="cacheEnabledDesc">Cache summaries to avoid repeated requests</span>
-          </div>
-          <label class="toggle-switch">
-            <input type="checkbox" id="cacheEnabled" />
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div class="row" style="margin-top: 16px;">
-          <div class="form-group">
-            <label for="cacheTtl" data-i18n="cacheTtlLabel">Cache TTL (minutes)</label>
-            <input id="cacheTtl" type="number" min="1" placeholder="60" />
-          </div>
-          <div class="form-group">
-            <label for="cacheMax" data-i18n="cacheMaxLabel">Max Cache Entries</label>
-            <input id="cacheMax" type="number" min="1" placeholder="50" />
-          </div>
-        </div>
-      </div>
-
       <!-- 本地服务配置 -->
       <div class="card">
-        <h2 class="card-title" data-i18n="localServerTitle">Local Server Configuration</h2>
+        <h2 class="card-title">
+          <span data-i18n="localServerTitle">Local Server Configuration</span>
+          <span id="serverIndicator" class="status-indicator offline" title=""></span>
+        </h2>
         <p class="card-description" data-i18n="localServerDesc">
           When enabled, video/audio will be transcribed via the local server. Run `any2summary serve` first.
         </p>
@@ -404,84 +520,128 @@
         </div>
       </div>
 
-      <!-- 摘要配置 -->
-      <div class="card">
-        <h2 class="card-title">摘要配置</h2>
-        <p class="card-description">
-          控制摘要输出的长度和详细程度。
-        </p>
-        <div class="form-group">
-          <label for="summaryLength">摘要长度</label>
-          <select id="summaryLength" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--border-radius); font-size: 14px; background: var(--card-bg);">
-            <option value="brief">简洁 (3-5句话)</option>
-            <option value="standard" selected>标准</option>
-            <option value="detailed">详细</option>
-            <option value="full">完整翻译</option>
-          </select>
+      <!-- 高级配置（折叠式） -->
+      <div class="collapsible-section" id="advancedSection">
+        <div class="collapsible-header" id="advancedToggle">
+          <h2 data-i18n="advancedConfigTitle">Advanced Configuration</h2>
+          <span class="collapsible-icon">▼</span>
         </div>
-      </div>
+        <div class="collapsible-content">
+          <!-- 摘要配置 -->
+          <div class="card">
+            <h2 class="card-title" data-i18n="summaryConfigTitle">Summary Configuration</h2>
+            <p class="card-description" data-i18n="summaryConfigDesc">
+              Control summary length and detail level.
+            </p>
+            <div class="form-group">
+              <label for="summaryLength" data-i18n="summaryLengthLabel">Summary Length</label>
+              <select id="summaryLength">
+                <option value="brief" data-i18n="summaryLengthBrief">Brief (3-5 sentences)</option>
+                <option value="standard" selected data-i18n="summaryLengthStandard">Standard</option>
+                <option value="detailed" data-i18n="summaryLengthDetailed">Detailed</option>
+                <option value="full" data-i18n="summaryLengthFull">Full Translation</option>
+              </select>
+            </div>
+          </div>
 
-      <!-- 语言偏好配置 -->
-      <div class="card">
-        <h2 class="card-title">语言偏好配置</h2>
-        <p class="card-description">
-          设置字幕/内容的首选语言顺序。
-        </p>
-        <div class="form-group">
-          <label for="preferredLanguage">首选语言</label>
-          <select id="preferredLanguage" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--border-radius); font-size: 14px; background: var(--card-bg);">
-            <option value="en">English</option>
-            <option value="zh-Hans">简体中文</option>
-            <option value="zh-Hant">繁体中文</option>
-            <option value="ja">日本語</option>
-            <option value="ko">한국어</option>
-          </select>
-        </div>
-        <div class="form-group" style="margin-top: 16px;">
-          <label for="fallbackLanguages">备选语言（逗号分隔）</label>
-          <input id="fallbackLanguages" type="text" placeholder="zh-Hans,zh-Hant,ja,ko" />
-        </div>
-      </div>
+          <!-- 语言偏好配置 -->
+          <div class="card">
+            <h2 class="card-title" data-i18n="languageConfigTitle">Language Preferences</h2>
+            <p class="card-description" data-i18n="languageConfigDesc">
+              Set preferred language order for subtitles/content.
+            </p>
+            <div class="form-group">
+              <label for="preferredLanguage" data-i18n="preferredLanguageLabel">Preferred Language</label>
+              <select id="preferredLanguage">
+                <option value="en">English</option>
+                <option value="zh-Hans">简体中文</option>
+                <option value="zh-Hant">繁體中文</option>
+                <option value="ja">日本語</option>
+                <option value="ko">한국어</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-top: 16px;">
+              <label for="fallbackLanguages" data-i18n="fallbackLanguagesLabel">Fallback Languages (comma-separated)</label>
+              <input id="fallbackLanguages" type="text" placeholder="zh-Hans,zh-Hant,ja,ko" />
+            </div>
+          </div>
 
-      <!-- 自动保存配置 -->
-      <div class="card">
-        <h2 class="card-title" data-i18n="autoSaveTitle">Auto Save Configuration</h2>
-        <p class="card-description" data-i18n="autoSaveDesc">
-          Automatically save summaries as Markdown files to Chrome downloads folder.
-        </p>
-        <div class="toggle-group">
-          <div class="toggle-label">
-            <span class="toggle-title" data-i18n="autoSaveEnabledTitle">Auto Save Summaries</span>
-            <span class="toggle-description" data-i18n="autoSaveEnabledDesc">Save summaries to local files automatically</span>
+          <!-- 缓存设置 -->
+          <div class="card">
+            <h2 class="card-title" data-i18n="cacheTitle">Cache Settings</h2>
+            <div class="toggle-group">
+              <div class="toggle-label">
+                <span class="toggle-title" data-i18n="cacheEnabledTitle">Enable Cache</span>
+                <span class="toggle-description" data-i18n="cacheEnabledDesc">Cache summaries to avoid repeated requests</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="cacheEnabled" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="row" style="margin-top: 16px;">
+              <div class="form-group">
+                <label for="cacheTtl" data-i18n="cacheTtlLabel">Cache TTL (minutes)</label>
+                <input id="cacheTtl" type="number" min="1" placeholder="60" />
+              </div>
+              <div class="form-group">
+                <label for="cacheMax" data-i18n="cacheMaxLabel">Max Cache Entries</label>
+                <input id="cacheMax" type="number" min="1" placeholder="50" />
+              </div>
+            </div>
+            <!-- 缓存管理 UI -->
+            <div class="cache-management">
+              <div class="cache-info">
+                <span data-i18n="cacheSizeLabel">Cache Size:</span>
+                <strong id="cacheSize">-- KB</strong>
+                <span style="margin-left: 12px;" data-i18n="cacheEntriesLabel">Entries:</span>
+                <strong id="cacheEntries">--</strong>
+              </div>
+              <button id="clearCache" type="button" class="btn btn-danger btn-small" data-i18n="clearCacheButton">Clear Cache</button>
+            </div>
           </div>
-          <label class="toggle-switch">
-            <input type="checkbox" id="autoSaveSummary" />
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div class="toggle-group">
-          <div class="toggle-label">
-            <span class="toggle-title">保存时间线文件</span>
-            <span class="toggle-description">同时保存原始字幕时间线（视频/音频内容）</span>
+
+          <!-- 自动保存配置 -->
+          <div class="card">
+            <h2 class="card-title" data-i18n="autoSaveTitle">Auto Save Configuration</h2>
+            <p class="card-description" data-i18n="autoSaveDesc">
+              Automatically save summaries as Markdown files to Chrome downloads folder.
+            </p>
+            <div class="toggle-group">
+              <div class="toggle-label">
+                <span class="toggle-title" data-i18n="autoSaveEnabledTitle">Auto Save Summaries</span>
+                <span class="toggle-description" data-i18n="autoSaveEnabledDesc">Save summaries to local files automatically</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="autoSaveSummary" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-group">
+              <div class="toggle-label">
+                <span class="toggle-title" data-i18n="saveTimelineTitle">Save Timeline File</span>
+                <span class="toggle-description" data-i18n="saveTimelineDesc">Save original subtitle timeline for video/audio</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="saveTimeline" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-group">
+              <div class="toggle-label">
+                <span class="toggle-title" data-i18n="inferDomainTitle">Auto-infer Domain Tag</span>
+                <span class="toggle-description" data-i18n="inferDomainDesc">Infer Domain tag from summary (requires extra API call)</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="inferDomain" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="form-group" style="margin-top: 16px;">
+              <label for="saveSubdirectory" data-i18n="saveSubdirectoryLabel">Save Subdirectory</label>
+              <input id="saveSubdirectory" type="text" placeholder="any2summary" />
+            </div>
           </div>
-          <label class="toggle-switch">
-            <input type="checkbox" id="saveTimeline" />
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div class="toggle-group">
-          <div class="toggle-label">
-            <span class="toggle-title">自动推断领域标签</span>
-            <span class="toggle-description">从摘要内容推断 Domain 标签（需额外 API 调用）</span>
-          </div>
-          <label class="toggle-switch">
-            <input type="checkbox" id="inferDomain" />
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div class="form-group" style="margin-top: 16px;">
-          <label for="saveSubdirectory" data-i18n="saveSubdirectoryLabel">Save Subdirectory</label>
-          <input id="saveSubdirectory" type="text" placeholder="any2summary" />
         </div>
       </div>
 

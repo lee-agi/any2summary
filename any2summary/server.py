@@ -149,8 +149,13 @@ def create_app() -> Any:
         """
         from any2summary import cli
 
+        _LOGGER.info("[Transcribe] Received request for: %s", body.url)
+        _LOGGER.info("[Transcribe] Parameters: language=%s, max_speakers=%s, streaming=%s",
+                     body.language, body.max_speakers, body.streaming)
+
         try:
             # Run in thread pool to avoid blocking
+            _LOGGER.info("[Transcribe] Starting Azure diarization...")
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
@@ -162,17 +167,23 @@ def create_app() -> Any:
                     streaming=body.streaming,
                 ),
             )
+            _LOGGER.info("[Transcribe] Diarization completed with %d transcript segments",
+                         len(result.get("transcript", [])))
 
             # 获取 video metadata（perform_azure_diarization 不返回 metadata）
             # 这是为了确保 Chrome 扩展能获取正确的 title、domain 和 uploadDate
             video_metadata = None
             try:
+                _LOGGER.info("[Transcribe] Fetching video metadata...")
                 video_metadata = cli._fetch_video_metadata(body.url)
+                _LOGGER.info("[Transcribe] Metadata fetched: title=%s",
+                             video_metadata.get("title", "N/A") if video_metadata else "N/A")
             except Exception as meta_exc:
-                _LOGGER.warning("Failed to fetch video metadata: %s", meta_exc)
+                _LOGGER.warning("[Transcribe] Failed to fetch video metadata: %s", meta_exc)
 
             camel_metadata = _convert_metadata_to_camel_case(video_metadata) if video_metadata else None
 
+            _LOGGER.info("[Transcribe] Request completed successfully")
             return {
                 "speakers": result.get("speakers", []),
                 "transcript": result.get("transcript", []),
@@ -180,9 +191,10 @@ def create_app() -> Any:
             }
 
         except RuntimeError as exc:
+            _LOGGER.error("[Transcribe] RuntimeError: %s", exc)
             raise HTTPException(status_code=400, detail=str(exc))
         except Exception as exc:
-            _LOGGER.exception("Transcription failed")
+            _LOGGER.exception("[Transcribe] Unexpected error during transcription")
             raise HTTPException(status_code=500, detail=str(exc))
 
     @app.post("/api/summarize")

@@ -154,9 +154,24 @@ The script loads `.env` located in the same directory and calls `setup_and_run.s
 
 **`doctor` command:**
 ```bash
+# Basic health check
 any2summary doctor
+
+# Auto-fix recoverable issues (e.g., create .env template, install missing packages)
+any2summary doctor --fix
+
+# Output results as JSON for scripting/automation
+any2summary doctor --json
+
+# Combine both: fix issues and output JSON report
+any2summary doctor --fix --json
 ```
 Checks Python version, ffmpeg, yt-dlp, required packages, `.env` file, environment variables, Azure connectivity, and cache directory. Returns exit code 0 if all checks pass, 1 otherwise.
+
+| Option | Description |
+| --- | --- |
+| `--fix` | Attempt to auto-fix recoverable issues (create `.env` template, install missing pip packages, etc.) |
+| `--json` | Output results as JSON with fields: `status`, `checks_passed`, `checks_failed`, `total_checks`, `issues`, `fixes_attempted`, `fixes_succeeded` |
 
 **`init` command:**
 ```bash
@@ -272,11 +287,14 @@ any2summary --file ./paper.pdf --azure-summary --summary-length detailed
 # Run health check to verify dependencies
 any2summary doctor
 
+# Auto-fix any recoverable issues (creates .env template, installs missing packages)
+any2summary doctor --fix
+
 # Configure Azure credentials interactively
 any2summary init
 
-# Verify configuration works
-any2summary doctor
+# Verify configuration works (with JSON output for scripting)
+any2summary doctor --json
 ```
 
 ## Cache Layout

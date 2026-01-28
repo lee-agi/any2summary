@@ -174,3 +174,158 @@ class TestDoctorCommand:
         )
         # Relaxed assertion - just verify command completes
         assert exit_code is not None
+
+
+class TestDoctorJsonOutput:
+    """Tests for the doctor --json flag."""
+
+    def test_json_output_is_valid_json(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Verify --json flag produces valid JSON output."""
+        import json
+
+        exit_code = _run_doctor_command(["--json"])
+        captured = capsys.readouterr()
+
+        # Should be valid JSON
+        result = json.loads(captured.out)
+        assert isinstance(result, dict)
+
+    def test_json_output_has_required_fields(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Verify JSON output contains required fields."""
+        import json
+
+        exit_code = _run_doctor_command(["--json"])
+        captured = capsys.readouterr()
+
+        result = json.loads(captured.out)
+
+        # Check required fields
+        assert "status" in result
+        assert result["status"] in ("ok", "failed")
+        assert "checks_passed" in result
+        assert "checks_failed" in result
+        assert "total_checks" in result
+        assert "issues" in result
+        assert isinstance(result["issues"], list)
+
+    def test_json_output_no_print_statements(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Verify --json flag suppresses normal print output."""
+        import json
+
+        exit_code = _run_doctor_command(["--json"])
+        captured = capsys.readouterr()
+
+        # Output should be parseable as single JSON object
+        # (no extra print lines before/after)
+        try:
+            result = json.loads(captured.out)
+            assert isinstance(result, dict)
+        except json.JSONDecodeError as e:
+            pytest.fail(f"JSON output has extra content: {e}")
+
+    def test_json_issues_contain_error_codes(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        """Verify issues in JSON output contain error codes."""
+        import json
+
+        # Change to temp dir to ensure at least .env check fails
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            exit_code = _run_doctor_command(["--json"])
+            captured = capsys.readouterr()
+
+            result = json.loads(captured.out)
+            if result["issues"]:
+                for issue in result["issues"]:
+                    assert "code" in issue
+                    assert isinstance(issue["code"], int)
+                    assert "message" in issue
+                    assert "suggestion" in issue
+        finally:
+            os.chdir(original_cwd)
+
+
+class TestDoctorFixOption:
+    """Tests for the doctor --fix flag."""
+
+    def test_fix_option_is_recognized(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Verify --fix flag is recognized."""
+        # Should not raise an error for unrecognized argument
+        exit_code = _run_doctor_command(["--fix"])
+        assert isinstance(exit_code, int)
+
+    def test_fix_attempts_env_file_creation(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        """Verify --fix attempts to create .env file if missing."""
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+
+            # Verify .env doesn't exist
+            assert not (tmp_path / ".env").exists()
+
+            exit_code = _run_doctor_command(["--fix"])
+            captured = capsys.readouterr()
+
+            # Should have attempted fix
+            assert "修复" in captured.out or "fix" in captured.out.lower()
+
+            # .env file should now exist
+            assert (tmp_path / ".env").exists()
+        finally:
+            os.chdir(original_cwd)
+
+    def test_fix_shows_fix_summary(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        """Verify --fix shows a summary of fix attempts."""
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            exit_code = _run_doctor_command(["--fix"])
+            captured = capsys.readouterr()
+
+            # Should show fix attempt messages
+            output = captured.out
+            has_fix_info = (
+                "自动修复" in output
+                or "尝试" in output
+                or "修复" in output
+                or "fix" in output.lower()
+            )
+            assert has_fix_info
+        finally:
+            os.chdir(original_cwd)
+
+    def test_fix_and_json_together(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        """Verify --fix and --json can be used together."""
+        import json
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            exit_code = _run_doctor_command(["--fix", "--json"])
+            captured = capsys.readouterr()
+
+            result = json.loads(captured.out)
+
+            # Should include fix statistics
+            assert "fixes_attempted" in result
+            assert "fixes_succeeded" in result
+            assert result["fixes_attempted"] >= 0
+            assert result["fixes_succeeded"] >= 0
+        finally:
+            os.chdir(original_cwd)

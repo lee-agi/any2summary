@@ -232,5 +232,97 @@
   "serverConnectFailed": {
     "message": "Connection failed - Please ensure any2summary serve is running",
     "description": "Server status when connection failed"
+  },
+  "advancedConfigTitle": {
+    "message": "Advanced Configuration",
+    "description": "Advanced config section title"
+  },
+  "summaryConfigTitle": {
+    "message": "Summary Configuration",
+    "description": "Summary config card title"
+  },
+  "summaryConfigDesc": {
+    "message": "Control summary length and detail level.",
+    "description": "Summary config description"
+  },
+  "summaryLengthLabel": {
+    "message": "Summary Length",
+    "description": "Summary length select label"
+  },
+  "summaryLengthBrief": {
+    "message": "Brief (3-5 sentences)",
+    "description": "Brief summary option"
+  },
+  "summaryLengthStandard": {
+    "message": "Standard",
+    "description": "Standard summary option"
+  },
+  "summaryLengthDetailed": {
+    "message": "Detailed",
+    "description": "Detailed summary option"
+  },
+  "summaryLengthFull": {
+    "message": "Full Translation",
+    "description": "Full translation option"
+  },
+  "languageConfigTitle": {
+    "message": "Language Preferences",
+    "description": "Language config card title"
+  },
+  "languageConfigDesc": {
+    "message": "Set preferred language order for subtitles/content.",
+    "description": "Language config description"
+  },
+  "preferredLanguageLabel": {
+    "message": "Preferred Language",
+    "description": "Preferred language select label"
+  },
+  "fallbackLanguagesLabel": {
+    "message": "Fallback Languages (comma-separated)",
+    "description": "Fallback languages input label"
+  },
+  "saveTimelineTitle": {
+    "message": "Save Timeline File",
+    "description": "Save timeline toggle title"
+  },
+  "saveTimelineDesc": {
+    "message": "Save original subtitle timeline for video/audio",
+    "description": "Save timeline toggle description"
+  },
+  "inferDomainTitle": {
+    "message": "Auto-infer Domain Tag",
+    "description": "Infer domain toggle title"
+  },
+  "inferDomainDesc": {
+    "message": "Infer Domain tag from summary (requires extra API call)",
+    "description": "Infer domain toggle description"
+  },
+  "cacheSizeLabel": {
+    "message": "Cache Size:",
+    "description": "Cache size label"
+  },
+  "cacheEntriesLabel": {
+    "message": "Entries:",
+    "description": "Cache entries label"
+  },
+  "clearCacheButton": {
+    "message": "Clear Cache",
+    "description": "Clear cache button text"
+  },
+  "cacheCleared": {
+    "message": "Cache cleared successfully",
+    "description": "Toast message when cache is cleared"
+  },
+  "serverStatusOnline": {
+    "message": "Server online",
+    "description": "Server indicator tooltip when online"
+  },
+  "serverStatusOffline": {
+    "message": "Server offline",
+    "description": "Server indicator tooltip when offline"
+  },
+  "serverStatusChecking": {
+    "message": "Checking connection...",
+    "description": "Server indicator tooltip when checking"
   }
 }

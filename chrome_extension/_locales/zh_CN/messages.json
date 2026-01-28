@@ -232,5 +232,97 @@
   "serverConnectFailed": {
     "message": "连接失败 - 请确保已运行 any2summary serve",
     "description": "Server status when connection failed"
+  },
+  "advancedConfigTitle": {
+    "message": "高级配置",
+    "description": "Advanced config section title"
+  },
+  "summaryConfigTitle": {
+    "message": "摘要配置",
+    "description": "Summary config card title"
+  },
+  "summaryConfigDesc": {
+    "message": "控制摘要输出的长度和详细程度。",
+    "description": "Summary config description"
+  },
+  "summaryLengthLabel": {
+    "message": "摘要长度",
+    "description": "Summary length select label"
+  },
+  "summaryLengthBrief": {
+    "message": "简洁 (3-5句话)",
+    "description": "Brief summary option"
+  },
+  "summaryLengthStandard": {
+    "message": "标准",
+    "description": "Standard summary option"
+  },
+  "summaryLengthDetailed": {
+    "message": "详细",
+    "description": "Detailed summary option"
+  },
+  "summaryLengthFull": {
+    "message": "完整翻译",
+    "description": "Full translation option"
+  },
+  "languageConfigTitle": {
+    "message": "语言偏好配置",
+    "description": "Language config card title"
+  },
+  "languageConfigDesc": {
+    "message": "设置字幕/内容的首选语言顺序。",
+    "description": "Language config description"
+  },
+  "preferredLanguageLabel": {
+    "message": "首选语言",
+    "description": "Preferred language select label"
+  },
+  "fallbackLanguagesLabel": {
+    "message": "备选语言（逗号分隔）",
+    "description": "Fallback languages input label"
+  },
+  "saveTimelineTitle": {
+    "message": "保存时间线文件",
+    "description": "Save timeline toggle title"
+  },
+  "saveTimelineDesc": {
+    "message": "同时保存原始字幕时间线（视频/音频内容）",
+    "description": "Save timeline toggle description"
+  },
+  "inferDomainTitle": {
+    "message": "自动推断领域标签",
+    "description": "Infer domain toggle title"
+  },
+  "inferDomainDesc": {
+    "message": "从摘要内容推断 Domain 标签（需额外 API 调用）",
+    "description": "Infer domain toggle description"
+  },
+  "cacheSizeLabel": {
+    "message": "缓存大小：",
+    "description": "Cache size label"
+  },
+  "cacheEntriesLabel": {
+    "message": "条目数：",
+    "description": "Cache entries label"
+  },
+  "clearCacheButton": {
+    "message": "清空缓存",
+    "description": "Clear cache button text"
+  },
+  "cacheCleared": {
+    "message": "缓存已清空",
+    "description": "Toast message when cache is cleared"
+  },
+  "serverStatusOnline": {
+    "message": "服务器在线",
+    "description": "Server indicator tooltip when online"
+  },
+  "serverStatusOffline": {
+    "message": "服务器离线",
+    "description": "Server indicator tooltip when offline"
+  },
+  "serverStatusChecking": {
+    "message": "正在检测连接...",
+    "description": "Server indicator tooltip when checking"
   }
 }
