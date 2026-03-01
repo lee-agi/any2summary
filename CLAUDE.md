@@ -183,6 +183,17 @@ Chrome 扩展的文件命名逻辑与 CLI 保持一致：
 - camelCase 优先级高于 snake_case
 
 ## 版本历史
+- v1.6.2: 修复 Azure OpenAI Responses API 路径 — 解除 enrichment hang
+  - 新增 `_call_responses_api()` 辅助函数：用 raw httpx 替换 OpenAI SDK 调用 Responses API
+  - 修复 URL: `/openai/responses?api-version=...`（不再使用错误的 `/openai/v1/responses`）
+  - 修复认证: `api-key` header（不再使用 `Authorization: Bearer`）
+  - 修复代理: 复用 `_create_azure_http_client(proxy=None)` 绕过本地代理
+  - 内置 1 次重试（5xx/429），3s backoff
+  - `_build_responses_base_url()`: `/openai/v1` → `/openai`
+  - `generate_translation_summary` 和 `_infer_domain_from_summary` 两处 Responses API 调用迁移至 `_call_responses_api()`
+  - 删除 `AZURE_OPENAI_RESPONSES_BASE_URL` 环境变量依赖（该变量是对 `/openai/v1` bug 的 workaround）
+  - 新增 2 个测试 + 更新 2 个已有测试
+
 - v1.6.1: 转写流程日志可观测性增强
   - **服务器日志**：`/api/transcribe` 端点添加详细请求/响应日志
   - **CLI 日志**：`perform_azure_diarization()` 添加关键步骤进度日志（缓存检查、音频准备、分割、API 调用）

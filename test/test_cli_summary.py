@@ -38,47 +38,21 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
     monkeypatch.setenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", "gpt-5-pro")
     monkeypatch.delenv("AZURE_OPENAI_SUMMARY_API_VERSION", raising=False)
-    monkeypatch.delenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", raising=False)
     monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(PACKAGE_ROOT / "test-cache"))
 
     segments = [
         {"start": 0.0, "end": 3.2, "speaker": "Speaker 1", "text": "Hello world"}
     ]
 
-    captured: Dict[str, Any] = {}
-    requests: list[Dict[str, Any]] = []
+    calls: list[Dict[str, Any]] = []
 
-    class FakeResponses:
-        def create(self, **kwargs: Any):
-            call_index = len(requests)
-            requests.append(kwargs)
-            if call_index == 0:
-                return types.SimpleNamespace(
-                    output=[
-                        types.SimpleNamespace(
-                            content=[types.SimpleNamespace(text="翻译摘要")]
-                        )
-                    ],
-                    output_text="翻译摘要",
-                )
+    def fake_call_responses_api(**kwargs: Any) -> str:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return "翻译摘要"
+        return "科技"
 
-            return types.SimpleNamespace(
-                output=[
-                    types.SimpleNamespace(
-                        content=[types.SimpleNamespace(text="科技")]
-                    )
-                ],
-                output_text="科技",
-            )
-
-    class FakeClient:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            captured["init_kwargs"] = kwargs
-            self.responses = FakeResponses()
-
-    fake_openai = ModuleType("openai")
-    fake_openai.OpenAI = FakeClient  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setattr(cli, "_call_responses_api", fake_call_responses_api)
 
     monkeypatch.setattr(
         cli,
@@ -108,29 +82,29 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     assert result["metadata"]["domain"] == "Tech"
     assert result["total_words"] > 0
     assert result["estimated_minutes"] >= 1
-    assert result["file_base"] == "【科技】DemoTitle-2024-M01"
-    assert captured["init_kwargs"]["base_url"] == "https://example.invalid/openai/v1"
-    assert len(requests) == 2
-    summary_request = requests[0]
-    domain_request = requests[1]
-    assert summary_request["model"] == "gpt-5-pro"
-    request_input = summary_request["input"]
-    assert isinstance(request_input, list)
-    system_msg = request_input[0]
-    user_msg = request_input[1]
-    assert system_msg["role"] == "system"
-    assert system_msg["content"][0]["type"] == "input_text"
-    assert system_msg["content"][0]["text"] == cli._load_default_summary_prompt()
-    assert user_msg["role"] == "user"
-    assert user_msg["content"][0]["type"] == "input_text"
-    assert "Hello world" in user_msg["content"][0]["text"]
-    assert "00:00:00" in user_msg["content"][0]["text"]
+    assert result["file_base"] == "【Tech】DemoTitle-2024-M01"
     assert "## 欢迎交流与合作" in summary
-    assert domain_request["model"] == "gpt-5-pro"
-    domain_input = domain_request["input"]
-    assert isinstance(domain_input, list)
-    assert domain_input[0]["content"][0]["text"] == cli.DOMAIN_PROMPT
-    assert domain_input[1]["content"][0]["text"] == "翻译摘要"
+
+    # Verify _call_responses_api was called twice (summary + domain)
+    assert len(calls) == 2
+
+    # Summary call
+    summary_call = calls[0]
+    assert summary_call["endpoint"] == "https://example.invalid"
+    assert summary_call["api_key"] == "test-key"
+    assert summary_call["deployment"] == "gpt-5-pro"
+    assert len(summary_call["messages"]) == 2
+    assert summary_call["messages"][0]["role"] == "system"
+    assert summary_call["messages"][0]["content"] == cli._load_default_summary_prompt()
+    assert summary_call["messages"][1]["role"] == "user"
+    assert "Hello world" in summary_call["messages"][1]["content"]
+    assert "00:00:00" in summary_call["messages"][1]["content"]
+
+    # Domain call
+    domain_call = calls[1]
+    assert domain_call["deployment"] == "gpt-5-pro"
+    assert domain_call["messages"][0]["content"] == cli.DOMAIN_PROMPT
+    assert domain_call["messages"][1]["content"] == "翻译摘要"
 
 
 def test_generate_translation_summary_infers_domain_via_azure(
@@ -144,40 +118,31 @@ def test_generate_translation_summary_infers_domain_via_azure(
         {"start": 0.0, "end": 1.0, "speaker": "Speaker", "text": "Tech talk"}
     ]
 
-    requests: list[Dict[str, Any]] = []
+    calls: list[Dict[str, Any]] = []
 
-    class FakeResponses:
-        def create(self, **kwargs: Any):
-            call_index = len(requests)
-            requests.append(kwargs)
-            if call_index == 0:
-                return types.SimpleNamespace(output_text="摘要内容")
-            return types.SimpleNamespace(output_text="科技")
+    def fake_call_responses_api(**kwargs: Any) -> str:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return "摘要内容"
+        return "科技"
 
-    class FakeClient:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.responses = FakeResponses()
-
-    fake_openai = ModuleType("openai")
-    fake_openai.OpenAI = FakeClient  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "openai", fake_openai)
-
+    monkeypatch.setattr(cli, "_call_responses_api", fake_call_responses_api)
     monkeypatch.setattr(cli, "_fetch_video_metadata", lambda _url: {})
 
     result = cli.generate_translation_summary(
         segments, "https://example.invalid/watch?v=tech"
     )
 
-    assert requests and len(requests) == 2
-    domain_request = requests[-1]
-    user_content = domain_request["input"][1]["content"][0]["text"]
-    assert user_content == "摘要内容"
-    assert domain_request["input"][0]["content"][0]["text"] == cli.DOMAIN_PROMPT
+    assert len(calls) == 2
+
+    # Domain call receives the raw summary text
+    domain_call = calls[-1]
+    assert domain_call["messages"][1]["content"] == "摘要内容"
+    assert domain_call["messages"][0]["content"] == cli.DOMAIN_PROMPT
     assert "Tech" in result["summary_markdown"]
     heading = result["summary_markdown"].splitlines()[0]
     assert heading.startswith("# 【Tech】")
     assert result["metadata"]["domain"] == "Tech"
-    assert "raw_summary" not in domain_request
 
 
 def test_compose_summary_documents_is_bilingual() -> None:
@@ -489,3 +454,105 @@ def test_write_summary_documents_copies_to_default_outbox_and_adds_suffix(monkey
     assert timeline_path.name.startswith("demo_timeline")
     assert timeline_path.suffix == ".md"
     assert "outbox_timeline" not in result
+
+
+# ---------- _call_responses_api unit tests ----------
+
+
+class FakeHttpxResponse:
+    """Minimal fake httpx.Response for testing _call_responses_api."""
+
+    def __init__(self, status_code: int = 200, json_data: dict | None = None):
+        self.status_code = status_code
+        self._json_data = json_data or {}
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise Exception(f"HTTP {self.status_code}")
+
+    def json(self) -> dict:
+        return self._json_data
+
+
+class FakeHttpxClient:
+    """Fake httpx.Client that captures request details."""
+
+    def __init__(self, responses: list[FakeHttpxResponse] | None = None):
+        self.requests: list[Dict[str, Any]] = []
+        self._responses = list(responses or [FakeHttpxResponse()])
+        self._call_idx = 0
+        self.closed = False
+
+    def post(self, url: str, **kwargs: Any) -> FakeHttpxResponse:
+        self.requests.append({"url": url, **kwargs})
+        resp = self._responses[min(self._call_idx, len(self._responses) - 1)]
+        self._call_idx += 1
+        return resp
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_call_responses_api_url_and_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify _call_responses_api sends correct URL, api-key header, and payload."""
+    fake_client = FakeHttpxClient(responses=[
+        FakeHttpxResponse(200, {"output_text": "test response"}),
+    ])
+    monkeypatch.setattr(cli, "_create_azure_http_client", lambda: fake_client)
+
+    result = cli._call_responses_api(
+        endpoint="https://myregion.openai.azure.com",
+        api_key="my-secret-key",
+        deployment="llab-gpt-5-pro",
+        messages=[
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello"},
+        ],
+        max_output_tokens=1024,
+    )
+
+    assert result == "test response"
+    assert len(fake_client.requests) == 1
+
+    req = fake_client.requests[0]
+    # URL must use /openai/responses?api-version=... (NOT /openai/v1/responses)
+    assert "/openai/responses?api-version=" in req["url"]
+    assert "/v1/" not in req["url"]
+    assert "2025-03-01-preview" in req["url"]
+
+    # Auth must use api-key header (NOT Authorization: Bearer)
+    assert req["headers"]["api-key"] == "my-secret-key"
+    assert "Authorization" not in req["headers"]
+
+    # Payload structure
+    payload = req["json"]
+    assert payload["model"] == "llab-gpt-5-pro"
+    assert payload["max_output_tokens"] == 1024
+    assert len(payload["input"]) == 2
+    assert payload["input"][0]["role"] == "system"
+    assert payload["input"][0]["content"][0]["type"] == "input_text"
+    assert payload["input"][1]["content"][0]["text"] == "Hello"
+
+    assert fake_client.closed is True
+
+
+def test_call_responses_api_retry_on_5xx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify _call_responses_api retries once on 5xx and succeeds."""
+    fake_client = FakeHttpxClient(responses=[
+        FakeHttpxResponse(502, {}),  # First call: 502
+        FakeHttpxResponse(200, {"output_text": "recovered"}),  # Retry: success
+    ])
+    monkeypatch.setattr(cli, "_create_azure_http_client", lambda: fake_client)
+    # Speed up test by patching time.sleep
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    result = cli._call_responses_api(
+        endpoint="https://myregion.openai.azure.com",
+        api_key="key",
+        deployment="model",
+        messages=[{"role": "user", "content": "test"}],
+    )
+
+    assert result == "recovered"
+    assert len(fake_client.requests) == 2  # 1 failed + 1 retry
+    assert fake_client.closed is True

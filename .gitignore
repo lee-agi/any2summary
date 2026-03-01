@@ -3,8 +3,9 @@
 CLAUDE.md
 AGENTS.md
 WARP.md
-any2summary/__pycache__/
-test/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
 build/
 any2summary.egg-info/
 cookies.txt

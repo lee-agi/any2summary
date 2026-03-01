@@ -579,6 +579,128 @@ def _create_azure_http_client() -> Optional["httpx.Client"]:
     )
 
 
+def _call_responses_api(
+    *,
+    endpoint: str,
+    api_key: str,
+    deployment: str,
+    messages: List[Dict[str, Any]],
+    max_output_tokens: int = 4096,
+    api_version: str | None = None,
+) -> str:
+    """Call Azure OpenAI Responses API using raw httpx (no OpenAI SDK).
+
+    Fixes three bugs in the previous OpenAI-SDK-based path:
+    1. URL: ``/openai/responses?api-version=...`` (not ``/openai/v1/responses``)
+    2. Auth: ``api-key`` header (not ``Authorization: Bearer``)
+    3. Proxy: bypassed via ``proxy=None`` (reuses ``_create_azure_http_client``)
+
+    Includes a single automatic retry on 5xx / 429 with 3 s backoff.
+
+    Returns:
+        The ``output_text`` string from the Responses API response.
+
+    Raises:
+        RuntimeError: if httpx is unavailable or the API returns an error
+            after retry.
+    """
+    import time as _time
+
+    if not _HTTPX_AVAILABLE or httpx is None:
+        raise RuntimeError("httpx is required for _call_responses_api")
+
+    base = _build_responses_base_url(endpoint)
+    version = api_version or os.getenv(
+        "AZURE_OPENAI_API_VERSION", "2025-03-01-preview"
+    )
+    url = f"{base}/responses?api-version={version}"
+
+    headers = {
+        "api-key": api_key,
+        "Content-Type": "application/json",
+    }
+
+    # Build input in Responses API format
+    input_messages: List[Dict[str, Any]] = []
+    for msg in messages:
+        input_messages.append(
+            {
+                "role": msg["role"],
+                "content": [{"type": "input_text", "text": msg["content"]}],
+            }
+        )
+
+    payload: Dict[str, Any] = {
+        "model": deployment,
+        "input": input_messages,
+        "max_output_tokens": max_output_tokens,
+    }
+
+    client = _create_azure_http_client()
+    if client is None:
+        raise RuntimeError("httpx is required for _call_responses_api")
+
+    max_retries = 1
+    last_exc: Exception | None = None
+    try:
+        for attempt in range(max_retries + 1):
+            try:
+                resp = client.post(url, headers=headers, json=payload)
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
+                    _time.sleep(3)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                status = data.get("status", "")
+                # Extract output_text from response
+                output_text = data.get("output_text")
+                if output_text:
+                    if status == "incomplete":
+                        logging.warning(
+                            "_call_responses_api: status=incomplete "
+                            "(max_output_tokens=%d hit?), returning partial text",
+                            max_output_tokens,
+                        )
+                    return str(output_text)
+                # Fallback: parse output array (works for incomplete responses too)
+                output = data.get("output", [])
+                texts: List[str] = []
+                for item in output:
+                    if isinstance(item, dict):
+                        for c in item.get("content", []):
+                            if isinstance(c, dict) and c.get("text"):
+                                texts.append(c["text"])
+                if texts:
+                    if status == "incomplete":
+                        logging.warning(
+                            "_call_responses_api: status=incomplete, "
+                            "returning partial text from output array",
+                        )
+                    return "\n".join(texts)
+                if status == "incomplete":
+                    raise RuntimeError(
+                        f"Azure Responses API returned status=incomplete with no output text. "
+                        f"Try increasing max_output_tokens (current: {max_output_tokens}). "
+                        f"Response: {json.dumps(data)[:300]}"
+                    )
+                raise RuntimeError(
+                    f"No output_text in Responses API response: {json.dumps(data)[:500]}"
+                )
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    status = getattr(getattr(exc, "response", None), "status_code", None)
+                    if status in (429, 500, 502, 503, 504):
+                        _time.sleep(3)
+                        continue
+                raise
+    finally:
+        client.close()
+
+    # Should not reach here, but satisfy type checker
+    raise RuntimeError(f"_call_responses_api failed: {last_exc}")
+
+
 def _getenv(*keys: str) -> Optional[str]:
     """Return the first defined environment variable among keys."""
 
@@ -3238,33 +3360,16 @@ def generate_translation_summary(
         )
 
     if use_responses:
-        base_url = os.getenv("AZURE_OPENAI_RESPONSES_BASE_URL")
-        if not base_url:
-            base_url = _build_responses_base_url(azure_endpoint)
-
-        try:
-            from openai import OpenAI
-        except ModuleNotFoundError as exc:  # pragma: no cover - depends on env
-            raise RuntimeError(
-                "openai 库未安装。请执行 `pip install openai`."
-            ) from exc
-
-        client = OpenAI(base_url=base_url.rstrip("/"), api_key=azure_key)
-        response = client.responses.create(
-            model=deployment,
-            input=[
-                {
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": instruction}],
-                },
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": user_message}],
-                },
+        raw_summary = _call_responses_api(
+            endpoint=azure_endpoint,
+            api_key=azure_key,
+            deployment=deployment,
+            messages=[
+                {"role": "system", "content": instruction},
+                {"role": "user", "content": user_message},
             ],
             max_output_tokens=max_tokens,
         )
-        raw_summary = _extract_responses_text(response)
     else:
         summary_api_version = (
             os.getenv("AZURE_OPENAI_SUMMARY_API_VERSION") or "2025-01-01-preview"
@@ -3376,28 +3481,16 @@ def _infer_domain_from_summary(raw_summary: str) -> Optional[str]:
 
     try:
         if use_responses:
-            base_url = os.getenv("AZURE_OPENAI_RESPONSES_BASE_URL")
-            if not base_url:
-                base_url = _build_responses_base_url(azure_endpoint)
-
-            from openai import OpenAI
-
-            client = OpenAI(base_url=base_url.rstrip("/"), api_key=azure_key)
-            response = client.responses.create(
-                model=deployment,
-                input=[
-                    {
-                        "role": "system",
-                        "content": [{"type": "input_text", "text": DOMAIN_PROMPT}],
-                    },
-                    {
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": text}],
-                    },
+            content = _call_responses_api(
+                endpoint=azure_endpoint,
+                api_key=azure_key,
+                deployment=deployment,
+                messages=[
+                    {"role": "system", "content": DOMAIN_PROMPT},
+                    {"role": "user", "content": text},
                 ],
                 max_output_tokens=1024,
             )
-            content = _extract_responses_text(response)
         else:
             summary_api_version = (
                 os.getenv("AZURE_OPENAI_SUMMARY_API_VERSION") or "2025-01-01-preview"
@@ -3665,9 +3758,12 @@ def _build_exchange_footer() -> List[str]:
 
 def _build_responses_base_url(endpoint: str) -> str:
     normalized = endpoint.rstrip("/")
-    if normalized.endswith("/openai/v1"):
+    if normalized.endswith("/openai"):
         return normalized
-    return f"{normalized}/openai/v1"
+    # Strip legacy /v1 suffix if present
+    if normalized.endswith("/openai/v1"):
+        normalized = normalized[: -len("/v1")]
+    return f"{normalized}/openai"
 
 
 def _extract_responses_text(response: object) -> str:
