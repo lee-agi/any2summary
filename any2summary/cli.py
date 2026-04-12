@@ -108,9 +108,9 @@ ESTIMATED_TOKENS_PER_SECOND = 4.0
 PROGRESS_BAR_WIDTH = 30
 READING_WORDS_PER_MINUTE = 300
 MAX_SINGLE_RUN_ATTEMPTS = 2
-DEFAULT_OUTBOX_DIR = (
-    "/Users/clzhang/Library/Mobile Documents/"
-    "iCloud~md~obsidian/Documents/Obsidian Vault/010 outbox"
+DEFAULT_OUTBOX_DIR = str(
+    Path.home() / "Library" / "Mobile Documents"
+    / "iCloud~md~obsidian" / "Documents" / "Obsidian Vault" / "010 outbox"
 )
 PROMPTS_ROOT = Path(__file__).resolve().parents[1] / "prompts"
 DEFAULT_SUMMARY_PROMPT_PATH = PROMPTS_ROOT / "summary_prompt.txt"
