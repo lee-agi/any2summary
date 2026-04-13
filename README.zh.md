@@ -2,6 +2,8 @@
 
 `any2summary` 是一个面向播客、视频与网页文章的命令行工具，可在本地一次性完成“下载/转写 → 说话人分离 → 摘要导出”整条链路。CLI 默认输出结构化 JSON，并在启用 Azure 摘要后生成带封面、目录与时间轴表格的 Markdown，帮助你把长内容快速同步到知识库或笔记工具，大幅提高知识获取效率。
 
+> 更新日志：请参阅 `CHANGELOG.md` 获取版本历史与主要改动。
+
 > Looking for the English version? Check `README.md`. 两份 README 结构一致，更新时请保持同步。
 
 ## 适用场景
@@ -15,7 +17,7 @@
 - Azure 说话人分离结果与原字幕自动对齐，若 Azure 返回空结果会回退到已有字幕，避免流程中断。
 - 无字幕或音频专用链接会自动触发 Azure 转写，若想在字幕已存在时也使用 Azure，可显式添加 `--force-azure-diarization`。
 - `--azure-summary` 会调用 Azure GPT-5（Responses API 或 Chat 完成）生成 Markdown 摘要，并另存到 `ANY2SUMMARY_OUTBOX_DIR`（默认指向 Obsidian outbox）。
-- 文章模式（`fetch_article_assets`）会缓存 `article_raw.html`、`article_content.txt`、`article_metadata.json` 并套用 `ARTICLE_SUMMARY_PROMPT`；可用 `--article-summary-prompt-file` 单独调参。
+- 文章模式（`fetch_article_assets`）会缓存 `article_raw.html`、`article_content.txt`、`article_metadata.json` 并套用 `ARTICLE_SUMMARY_PROMPT`；可用 `--article-summary-prompt-file` 单独调参；会保留页面中的图片和表格链接，便于回溯原文。
 - `--clean-cache` 用于排查缓存；`ANY2SUMMARY_DOTENV` 允许自动加载 `.env` 并兼容历史 `PODCAST_TRANSFORMER_*` 变量。
 - CLI 输出默认使用缩进 JSON，批量模式会顺序打印多个完整 JSON 文档，便于直接复制或通过流式解析消费。
 
@@ -152,6 +154,8 @@ python -m any2summary.cli \
 - **默认 Prompt 管理**：直接编辑仓库 `prompts/summary_prompt.txt` 与 `prompts/article_prompt.txt` 即可修改 CLI 默认摘要风格，每次执行都会重新读取文件内容。
 - **说话人优化**：利用 `--known-speaker` (name=wav) 或 `--known-speaker-name` 提供语义/音频提示提升 Azure 标签准确率。
 - **Azure Streaming**：默认开启，若在 CI 环境不希望显示进度条，可添加 `--no-azure-streaming`。
+- **流式容错**：`_consume_transcription_response` 会在 Azure 连接提前关闭（如 `RemoteProtocolError`）时记录 WARNING 并保留已获取的 chunk，确保说话人分离可以继续。
+- **任务重试**：`_run_single_with_retry` 会在首次执行返回非 0 时自动重跑一次，批量模式 `_run_multiple` 也会同步重试，缓解瞬时的网络/接口抖动。
 - **Android 回退**：当 `yt_dlp` 遇到 403 时会自动切换至 Android UA；如站点需要 cookie，请设置 `ANY2SUMMARY_YTDLP_COOKIES`。
 - **调试 payload**：把 `ANY2SUMMARY_DEBUG_PAYLOAD` 设为 `1` 后，可在缓存目录获取 `debug_payload_*.json` 观察 Azure 原始响应。
 - **多 URL 策略**：内部使用 `ThreadPoolExecutor`，最大并发不超过 CPU 核心数；可通过分批调用控制资源占用。
@@ -182,7 +186,14 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest test/test_cli.py test/test_cli_article.p
 # 或在仓库根目录执行：
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest any2summary/test/
 pytest test/ -q  # 回归与集成用例
+
+# 如需跑真实 Azure 端到端用例（默认跳过）：
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -m e2e test/
 ```
+> 端到端用例默认不执行；需显式配置 `AZURE_OPENAI_API_KEY`、
+> `AZURE_OPENAI_ENDPOINT`、`AZURE_OPENAI_SUMMARY_DEPLOYMENT`（可选
+> `AZURE_OPENAI_SUMMARY_API_VERSION`）。务必通过环境变量/CI Secrets 注入，
+> 不要硬编码，并确保日志中对密钥做掩码处理。
 
 ## 常见问题
 - **403 Forbidden / 无法下载音频**：确认 URL 可直接访问；若需登录，请提供 cookies (`ANY2SUMMARY_YTDLP_COOKIES`) 或使用 `setup_and_run.sh` 默认代理。

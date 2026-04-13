@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extName__",
+  "short_name": "any2summary",
+  "version": "1.0.0",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
+  "homepage_url": "https://github.com/clzhang/any2summary",
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "any2summary"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "notifications",
+    "downloads"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "options_page": "src/options.html",
+  "side_panel": {
+    "default_path": "src/sidepanel.html"
+  },
+  "commands": {
+    "run-summary": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S"
+      },
+      "description": "Summarize current tab"
+    }
+  },
+  "icons": {
+    "16": "src/icon16.png",
+    "48": "src/icon48.png",
+    "128": "src/icon128.png"
+  }
+}

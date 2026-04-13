@@ -2,6 +2,8 @@
 
 `any2summary` is a command-line toolkit that handles the entire pipeline for podcasts, videos, and long-form articles—download, transcription, optional Azure speaker diarization, and Markdown summarization—directly on your local machine. The CLI emits structured JSON by default, and when Azure summarization is enabled it also writes Markdown with a cover, table of contents, and timeline table so long-form content can drop into your note-taking system with minimal effort.
 
+> Changelog: see `CHANGELOG.md` for version history and notable changes.
+
 > 📘 Looking for the Simplified Chinese version? See `README.zh.md` in the project root. Both documents share the same structure and should stay in sync.
 
 ## Use Cases
@@ -15,9 +17,87 @@
 - Azure diarization results align with existing captions; when Azure returns empty segments the CLI falls back to the downloaded subtitles to keep the pipeline moving.
 - Audio-only links or captionless videos automatically trigger the Azure transcription flow; add `--force-azure-diarization` to invoke Azure even when captions exist.
 - `--azure-summary` calls Azure GPT-5 (Responses API or Chat Completions) to generate Markdown summaries and copies them into `ANY2SUMMARY_OUTBOX_DIR` (defaults to an Obsidian outbox folder).
-- Article mode (`fetch_article_assets`) caches `article_raw.html`, `article_content.txt`, and `article_metadata.json`, then applies `ARTICLE_SUMMARY_PROMPT`; `--article-summary-prompt-file` overrides the default.
+- Article mode (`fetch_article_assets`) caches `article_raw.html`, `article_content.txt`, and `article_metadata.json`, then applies `ARTICLE_SUMMARY_PROMPT`; `--article-summary-prompt-file` overrides the default. Image and table links are preserved to help inspect the original page.
 - `--clean-cache` clears cached artifacts for the current URL; `ANY2SUMMARY_DOTENV` automatically loads a `.env` file and remains compatible with legacy `PODCAST_TRANSFORMER_*` variables.
 - CLI output is always indented JSON; in batch mode each job prints a separate JSON document, making it easy to stream-parse.
+
+### Chrome Extension
+- **位置**：`chrome_extension/`，纯前端 MV3，具备与 CLI 相同的核心功能。
+- **Chrome Web Store**：[any2summary](https://chrome.google.com/webstore/detail/any2summary) - 可直接从商店安装。
+- **支持的内容类型**：
+  - **YouTube 视频**：自动获取字幕 + AI 总结（无需后端）
+  - **网页文章**：HTML 解析提取内容 + AI 总结
+  - **通用 URL**：直接 AI 总结（fallback）
+- **核心模块**（移植自 cli.py）：
+  - `contentDetector.js` - 智能检测 URL 类型（视频/音频/文章）
+  - `youtubeTranscript.js` - YouTube 字幕获取
+  - `articleParser.js` - 文章内容提取
+  - `prompts.js` - Prompt 模板（视频/文章不同模板）
+  - `summarize.js` - 主入口，整合所有模块
+  - `i18n.js` - 国际化支持
+- **国际化**：支持英文、简体中文、繁体中文，根据浏览器语言自动切换。
+- **配置**：在扩展 Options 页填写 Endpoint、Deployment、API Key；支持：
+  - `preferred_languages`: 字幕语言偏好（默认 en, zh-Hans, zh-Hant）
+  - `use_responses_api`: 切换 Responses API / Chat Completions API
+  - `max_output_tokens`: 最大输出 token 数
+  - 缓存参数（TTL、最大条目）
+- **安装方式**：
+  - **Chrome Web Store（推荐）**：搜索 "any2summary" 或访问上方链接
+  - **开发者模式**：Chrome 打开 `chrome://extensions` → 开启开发者模式 → "加载已解压的扩展程序" 指向 `chrome_extension/`
+- **侧边栏**：`src/sidepanel.html` 实时显示状态与结果。
+- **快捷键**：`Ctrl+Shift+S` 触发当前页摘要（macOS 上 Command+Shift+S）。
+- **Tab 级并行摘要**：支持多个 Tab 同时运行摘要任务，每个 Tab 的状态独立管理，互不干扰。切换 Tab 时侧边栏自动显示当前 Tab 的状态。
+- **文件命名**：与 cli.py 保持一致，格式为 `【{domain}】{title}-{year}-M{month}_summary.md`，例如 `【YouTube】iPhone新品发布-2024-M01_summary.md`；重名文件由 Chrome downloads API 自动添加 `(1)` 后缀。
+- **限制**：非 YouTube 的音频/视频转写需要启用本地 Companion Server（浏览器无法运行 ffmpeg）。
+- **隐私政策**：[Privacy Policy](https://clzhang.github.io/any2summary/privacy.html) - 所有数据存储在本地，不收集任何个人信息。
+
+### Companion Server（本地服务）
+
+Chrome 扩展可以通过本地 Companion Server 支持非 YouTube 的音频/视频转写功能。
+
+**启动服务：**
+```bash
+# 安装服务端依赖
+pip install any2summary[server]
+
+# 启动本地服务（默认端口 8765）
+any2summary serve
+
+# 自定义端口
+any2summary serve --port 9000
+
+# 开发模式（热重载）
+any2summary serve --reload
+```
+
+**API 端点：**
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `/api/health` | GET | 健康检查，返回服务状态和可用功能 |
+| `/api/transcribe` | POST | 音频转写（调用 Azure diarization），返回 camelCase metadata |
+| `/api/summarize` | POST | 完整摘要流程（转写 + AI 总结） |
+| `/api/youtube/transcript` | GET | 获取 YouTube 字幕，返回 camelCase metadata |
+
+**Metadata 字段格式：**
+- 服务器返回的 metadata 使用 camelCase 格式（如 `uploadDate`、`webpageUrl`）
+- Chrome 扩展可直接使用这些字段生成正确的文件名
+
+**Chrome 扩展配置：**
+1. 打开扩展 Options 页面
+2. 在「本地服务配置」部分启用本地服务
+3. 填写本地服务 URL（默认 `http://127.0.0.1:8765`）
+4. 点击「测试连接」验证服务可用性
+
+**工作流程：**
+1. 用户访问非 YouTube 的视频/音频页面
+2. Chrome 扩展检测到本地服务可用
+3. 扩展调用本地 `/api/transcribe` 获取转写结果
+4. 扩展使用 Azure OpenAI 生成摘要
+
+**安全说明：**
+- 服务默认绑定 `127.0.0.1`，仅本机可访问
+- API 密钥存储在本地，不经过任何第三方服务器
+- 生产环境不建议使用 `--host 0.0.0.0`
 
 ## Quick Start
 
@@ -56,9 +136,55 @@ The script loads `.env` located in the same directory and calls `setup_and_run.s
 
 ## CLI Reference
 
+### Subcommands
+
+| Subcommand | Description |
+| --- | --- |
+| (default) | Run the main summarization pipeline |
+| `serve` | Start the local companion server for Chrome extension support |
+| `doctor` | Health check for dependencies and service connectivity |
+| `init` | Interactive configuration wizard for `.env` file setup |
+
+**`serve` options:**
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--host` | `127.0.0.1` | Host to bind to |
+| `--port` | `8765` | Port to bind to |
+| `--reload` | Off | Enable auto-reload for development |
+
+**`doctor` command:**
+```bash
+# Basic health check
+any2summary doctor
+
+# Auto-fix recoverable issues (e.g., create .env template, install missing packages)
+any2summary doctor --fix
+
+# Output results as JSON for scripting/automation
+any2summary doctor --json
+
+# Combine both: fix issues and output JSON report
+any2summary doctor --fix --json
+```
+Checks Python version, ffmpeg, yt-dlp, required packages, `.env` file, environment variables, Azure connectivity, and cache directory. Returns exit code 0 if all checks pass, 1 otherwise.
+
+| Option | Description |
+| --- | --- |
+| `--fix` | Attempt to auto-fix recoverable issues (create `.env` template, install missing pip packages, etc.) |
+| `--json` | Output results as JSON with fields: `status`, `checks_passed`, `checks_failed`, `total_checks`, `issues`, `fixes_attempted`, `fixes_succeeded` |
+
+**`init` command:**
+```bash
+any2summary init [--force]
+```
+Interactively prompts for Azure OpenAI credentials and generates a `.env` file. Use `--force` to overwrite an existing file without confirmation. Validates Azure connectivity after collecting credentials.
+
+### Main Command Arguments
+
 | Argument | Type / Default | Required | Description | Typical Usage |
 | --- | --- | --- | --- | --- |
-| `--url` | String, comma-separated | ✔ | Video/audio/article URLs; processed concurrently in the given order | Batch caption/summary export |
+| `--url` | String, comma-separated | ✔* | Video/audio/article URLs; processed concurrently in the given order | Batch caption/summary export |
+| `--file` | Path | ✔* | Local audio/video/PDF file path (supports mp3/m4a/wav/mp4/mkv/webm/pdf) | Process local files directly |
 | `--language` | String, default `en` |  | Preferred language for captions/transcripts | Control transcript language |
 | `--fallback-language` | Repeatable |  | Extra language codes to try when the primary one is missing | Cross-language resilience |
 | `-V/--version` | Flag |  | Display version and exit | Verify installed version |
@@ -71,8 +197,12 @@ The script loads `.env` located in the same directory and calls `setup_and_run.s
 | `--known-speaker` | `name=path.wav`, repeatable |  | Provide reference audio clips to improve speaker labeling | Identify recurring hosts |
 | `--known-speaker-name` | String, repeatable |  | Supply speaker names without audio samples | Give Azure semantic hints |
 | `--clean-cache` | Flag |  | Remove cached artifacts for the current URL before processing | Force re-download/re-transcribe |
+| `--summary-length` | `brief`/`standard`/`detailed`/`full`, default `standard` |  | Control summary output detail level | Adjust output verbosity |
 
-> **Notes:** Article mode ignores `--summary-prompt-file` and `--force-azure-diarization` to ensure web pages always use the article-specific prompt. Conversely, Apple Podcasts and similar audio sources automatically fall back to the Azure pipeline even without `--force-azure-diarization`.
+> **Notes:**
+> - `--url` and `--file` are mutually exclusive; one must be provided (marked with ✔*).
+> - `--summary-length` options: `brief` (3-5 sentences, 2K tokens), `standard` (default, 8K tokens), `detailed` (expanded points, 16K tokens), `full` (complete translation, 32K tokens).
+> - Article mode ignores `--summary-prompt-file` and `--force-azure-diarization` to ensure web pages always use the article-specific prompt. Conversely, Apple Podcasts and similar audio sources automatically fall back to the Azure pipeline even without `--force-azure-diarization`.
 
 ## Environment Variables & Config
 
@@ -115,7 +245,7 @@ python -m any2summary.cli \
   --known-speaker "Host=./samples/host.wav"
 ```
 - Audio is cached under `~/.cache/any2summary/youtube/<video-id>/` and split when needed.
-- JSON output includes inline `summary`/`timeline` plus `summary_path` pointing to Markdown files; a copy is placed under `ANY2SUMMARY_OUTBOX_DIR`.
+- JSON output includes inline `summary`/`timeline` plus `summary_path` pointing to Markdown files; a copy is placed under `ANY2SUMMARY_OUTBOX_DIR`（文章/博客链接仅生成 summary，不会生成 timeline 文件，即便是 bilibili 等媒体域名下的阅读页也视为文章）。
 
 ### 3. Article mode
 ```bash
@@ -136,6 +266,37 @@ python -m any2summary.cli \
 ```
 - Each job prints a JSON block in the original order; failures are reported to stderr as `[URL] error message` without stopping remaining tasks.
 
+### 5. Local file processing
+```bash
+# Process local audio file
+any2summary --file ./podcast.mp3 --azure-summary --summary-length brief
+
+# Process local video file (extracts audio automatically)
+any2summary --file ./interview.mp4 --language zh --azure-summary
+
+# Process PDF document
+any2summary --file ./paper.pdf --azure-summary --summary-length detailed
+```
+- Supports audio (mp3/m4a/wav/flac/aac/ogg), video (mp4/mkv/webm/avi/mov), and PDF files.
+- Video files have audio extracted via ffmpeg before transcription.
+- PDF files use `pdfplumber` for text extraction (install via `pip install any2summary[pdf]`).
+- Cache is stored in `~/.cache/any2summary/file_<name>_<hash>/`.
+
+### 6. Quick setup with init and doctor
+```bash
+# Run health check to verify dependencies
+any2summary doctor
+
+# Auto-fix any recoverable issues (creates .env template, installs missing packages)
+any2summary doctor --fix
+
+# Configure Azure credentials interactively
+any2summary init
+
+# Verify configuration works (with JSON output for scripting)
+any2summary doctor --json
+```
+
 ## Cache Layout
 - Default cache root: `~/.cache/any2summary/<host_or_id>/`, containing:
   - `audio.*`: downloaded audio (split files named `audio_partXXX.wav`)
@@ -151,6 +312,8 @@ python -m any2summary.cli \
 - **Default prompt management:** editing `prompts/summary_prompt.txt` or `prompts/article_prompt.txt` immediately updates the CLI’s built-in behavior.
 - **Speaker accuracy:** use `--known-speaker name=sample.wav` or `--known-speaker-name` hints to improve Azure labels.
 - **Azure streaming:** enabled by default; disable with `--no-azure-streaming` in CI or log-sensitive environments.
+- **Streaming resiliency & checkpoints:** `_consume_transcription_response` logs warnings and preserves collected chunks when Azure closes the HTTP stream early (e.g., `RemoteProtocolError`、`httpcore.RemoteProtocolError`), diarization写入分段级 checkpoint (`diarization.partial.json`)，连接中断可续跑；遇到网络/传输错误时单段最多两次尝试，重试前会落盘 checkpoint，必要时可用 `--clean-cache` 强制重跑。
+- **Retry safety:** `_run_single_with_retry` reruns each URL once when the first attempt returns a non-zero exit code, and `_run_multiple` mirrors the behavior for batch jobs to smooth over transient network errors.
 - **Android fallback:** `yt_dlp` automatically retries with Android settings on YouTube 403 errors; provide cookies through `ANY2SUMMARY_YTDLP_COOKIES` for gated content.
 - **Payload debugging:** set `ANY2SUMMARY_DEBUG_PAYLOAD=1` to dump raw Azure responses as JSON in the cache folder.
 - **Batch throughput:** a `ThreadPoolExecutor` caps concurrency at CPU count; split large batches manually if you need throttling.
@@ -181,7 +344,15 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest test/test_cli.py test/test_cli_article.p
 # From the repo root:
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest any2summary/test/
 pytest test/ -q  # regression + integration suites
+
+# Run live Azure end-to-end cases only when secrets are provided:
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -m e2e test/
 ```
+> E2E tests are deselected by default; set `AZURE_OPENAI_API_KEY`,
+> `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_SUMMARY_DEPLOYMENT` (plus
+> optional `AZURE_OPENAI_SUMMARY_API_VERSION`) to enable them. Secrets must be
+> injected via environment variables/CI secrets instead of hard-coding, and
+> test logs should mask keys.
 
 ## FAQ
 - **403 Forbidden / audio download fails**: verify the URL is publicly accessible; for login-required content, provide cookies via `ANY2SUMMARY_YTDLP_COOKIES` or rely on the default proxy in `setup_and_run.sh`.

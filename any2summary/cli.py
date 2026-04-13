@@ -16,6 +16,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -24,7 +25,7 @@ import subprocess
 import sys
 import tempfile
 import wave
-from datetime import datetime
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from collections import defaultdict
 from importlib import metadata
@@ -42,7 +43,49 @@ from typing import (
     Tuple,
     Union,
 )
+from dataclasses import dataclass, field
 from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
+
+try:  # pragma: no cover - optional dependency already required by openai
+    import httpx
+    from httpx import RemoteProtocolError, ConnectError
+    _HTTPX_AVAILABLE = True
+except Exception:  # pragma: no cover - fallback when httpx missing
+    httpx = None  # type: ignore[assignment]
+    RemoteProtocolError = None  # type: ignore[assignment]
+    ConnectError = None  # type: ignore[assignment]
+    _HTTPX_AVAILABLE = False
+
+try:  # pragma: no cover - 可选依赖，覆盖 httpcore 直抛的协议错误
+    from httpcore import RemoteProtocolError as CoreRemoteProtocolError
+    from httpcore import ConnectError as CoreConnectError
+except Exception:  # pragma: no cover - httpcore 未安装时忽略
+    CoreRemoteProtocolError = None  # type: ignore[assignment]
+    CoreConnectError = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - numpy for audio processing
+    import numpy as np
+    _NUMPY_AVAILABLE = True
+except ImportError:  # pragma: no cover - numpy not installed
+    np = None  # type: ignore[assignment]
+    _NUMPY_AVAILABLE = False
+
+try:  # pragma: no cover - rich for beautiful progress bars
+    from rich.progress import (
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        BarColumn,
+        TaskProgressColumn,
+        TimeRemainingColumn,
+        TimeElapsedColumn,
+    )
+    from rich.console import Console
+    _RICH_AVAILABLE = True
+except ImportError:  # pragma: no cover - rich not installed
+    Progress = None  # type: ignore[assignment]
+    Console = None  # type: ignore[assignment]
+    _RICH_AVAILABLE = False
 
 
 DEFAULT_YTDLP_USER_AGENT = (
@@ -64,13 +107,599 @@ WAV_FRAME_CHUNK_SIZE = 32_768
 ESTIMATED_TOKENS_PER_SECOND = 4.0
 PROGRESS_BAR_WIDTH = 30
 READING_WORDS_PER_MINUTE = 300
-DEFAULT_OUTBOX_DIR = (
-    "/Users/clzhang/Library/Mobile Documents/"
-    "iCloud~md~obsidian/Documents/Obsidian Vault/010 outbox"
+MAX_SINGLE_RUN_ATTEMPTS = 2
+DEFAULT_OUTBOX_DIR = str(
+    Path.home() / "Library" / "Mobile Documents"
+    / "iCloud~md~obsidian" / "Documents" / "Obsidian Vault" / "010 outbox"
 )
 PROMPTS_ROOT = Path(__file__).resolve().parents[1] / "prompts"
 DEFAULT_SUMMARY_PROMPT_PATH = PROMPTS_ROOT / "summary_prompt.txt"
 DEFAULT_ARTICLE_PROMPT_PATH = PROMPTS_ROOT / "article_prompt.txt"
+
+# Supported file extensions for local file processing
+SUPPORTED_AUDIO_EXTENSIONS = frozenset({".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg"})
+SUPPORTED_VIDEO_EXTENSIONS = frozenset({".mp4", ".mkv", ".webm", ".avi", ".mov"})
+SUPPORTED_DOCUMENT_EXTENSIONS = frozenset({".pdf"})
+
+# Summary length configuration presets
+SUMMARY_LENGTH_CONFIGS: Dict[str, Dict[str, Any]] = {
+    "brief": {
+        "max_tokens": 2048,
+        "prompt_modifier": "\n\n【输出要求】请用 3-5 句话简洁总结核心内容，省略次要细节。",
+    },
+    "standard": {
+        "max_tokens": 16384,
+        "prompt_modifier": "",
+    },
+    "detailed": {
+        "max_tokens": 16384,
+        "prompt_modifier": "\n\n【输出要求】请详细展开每个要点，提供充分的上下文和解释。",
+    },
+    "full": {
+        "max_tokens": 32768,
+        "prompt_modifier": "\n\n【输出要求】请完整翻译全部内容，不做任何压缩或省略，保留所有细节。",
+    },
+}
+
+
+def _get_summary_length_config(length: Optional[str]) -> Dict[str, Any]:
+    """Get summary length configuration by name.
+
+    Args:
+        length: Summary length name (brief/standard/detailed/full) or None for default.
+
+    Returns:
+        Configuration dict with max_tokens and prompt_modifier.
+
+    Raises:
+        ValueError: If length name is invalid.
+    """
+    if length is None:
+        return SUMMARY_LENGTH_CONFIGS["standard"]
+    if length not in SUMMARY_LENGTH_CONFIGS:
+        valid = ", ".join(SUMMARY_LENGTH_CONFIGS.keys())
+        raise ValueError(f"无效的摘要长度 '{length}'，有效选项: {valid}")
+    return SUMMARY_LENGTH_CONFIGS[length]
+
+
+def _build_length_prompt_modifier(length: Optional[str]) -> str:
+    """Build prompt modifier string for the given summary length.
+
+    Args:
+        length: Summary length name or None for default.
+
+    Returns:
+        Prompt modifier string to append to the base prompt.
+    """
+    if length is None:
+        return ""
+    config = _get_summary_length_config(length)
+    return config.get("prompt_modifier", "")
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _detect_file_type(file_path: str) -> str:
+    """Detect the type of a local file based on extension.
+
+    Args:
+        file_path: Path to the file.
+
+    Returns:
+        File type: 'audio', 'video', 'document', or 'unknown'.
+    """
+    ext = Path(file_path).suffix.lower()
+    if ext in SUPPORTED_AUDIO_EXTENSIONS:
+        return "audio"
+    if ext in SUPPORTED_VIDEO_EXTENSIONS:
+        return "video"
+    if ext in SUPPORTED_DOCUMENT_EXTENSIONS:
+        return "document"
+    return "unknown"
+
+
+def _resolve_file_cache_dir(file_path: str) -> str:
+    """Resolve cache directory for a local file.
+
+    Args:
+        file_path: Path to the file.
+
+    Returns:
+        Path to cache directory based on file path hash.
+    """
+    # Use absolute path for consistent hashing
+    abs_path = os.path.abspath(file_path)
+    path_hash = hashlib.md5(abs_path.encode("utf-8")).hexdigest()[:12]
+    file_name = Path(file_path).stem[:20]  # Truncate long names
+    cache_name = f"file_{file_name}_{path_hash}"
+    return os.path.join(tempfile.gettempdir(), "any2summary_cache", cache_name)
+
+
+def _get_video_duration_ms(video_path: str) -> int:
+    """Get video duration in milliseconds using ffprobe.
+
+    Args:
+        video_path: Path to video file.
+
+    Returns:
+        Duration in milliseconds, or 0 if unable to determine.
+    """
+    ffprobe_path = shutil.which("ffprobe")
+    if not ffprobe_path:
+        return 0
+
+    try:
+        result = subprocess.run(
+            [
+                ffprobe_path,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            duration_sec = float(result.stdout.strip())
+            return int(duration_sec * 1000)
+    except Exception:
+        pass
+    return 0
+
+
+def _parse_ffmpeg_progress(line: str) -> int | None:
+    """Parse out_time_ms from ffmpeg progress output.
+
+    Args:
+        line: A line from ffmpeg -progress output.
+
+    Returns:
+        Time in milliseconds, or None if not a time line.
+    """
+    if line.startswith("out_time_ms="):
+        try:
+            return int(line.split("=", 1)[1].strip())
+        except (ValueError, IndexError):
+            pass
+    return None
+
+
+def _extract_audio_from_video(
+    video_path: str,
+    output_dir: str,
+    show_progress: bool = True,
+) -> str:
+    """Extract audio track from video file using ffmpeg.
+
+    Args:
+        video_path: Path to video file.
+        output_dir: Directory to save extracted audio.
+        show_progress: Whether to show progress bar.
+
+    Returns:
+        Path to extracted audio file.
+
+    Raises:
+        RuntimeError: If ffmpeg fails or is not available.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "extracted_audio.wav")
+
+    if os.path.isfile(output_path):
+        return output_path
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        raise RuntimeError("ffmpeg 未安装。请安装 ffmpeg: brew install ffmpeg")
+
+    # Get video duration for progress calculation
+    total_duration_ms = _get_video_duration_ms(video_path) if show_progress else 0
+
+    cmd = [
+        ffmpeg_path,
+        "-i", video_path,
+        "-vn",  # No video
+        "-acodec", "pcm_s16le",
+        "-ar", "16000",  # 16kHz sample rate
+        "-ac", "1",  # Mono
+        "-y",  # Overwrite
+    ]
+
+    # Add progress output if we can show it
+    if show_progress and total_duration_ms > 0:
+        cmd.extend(["-progress", "pipe:1", "-nostats"])
+
+    cmd.append(output_path)
+
+    try:
+        if show_progress and total_duration_ms > 0:
+            # Run with progress monitoring
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            video_name = os.path.basename(video_path)[:30]
+
+            while True:
+                if process.stdout is None:
+                    break
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+
+                current_ms = _parse_ffmpeg_progress(line)
+                if current_ms is not None:
+                    ratio = min(current_ms / total_duration_ms, 1.0)
+                    _update_progress_bar(ratio, f"提取音频: {video_name}")
+
+            # Wait for process to complete
+            _, stderr = process.communicate(timeout=300)
+
+            # Show completion
+            _update_progress_bar(1.0, f"提取音频: {video_name}")
+
+            if process.returncode != 0:
+                raise RuntimeError(f"ffmpeg 提取音频失败: {stderr[:200] if stderr else 'unknown error'}")
+        else:
+            # Run without progress (original behavior)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"ffmpeg 提取音频失败: {result.stderr[:200]}")
+
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("ffmpeg 提取音频超时")
+
+    return output_path
+
+
+def _extract_text_from_pdf(pdf_path: str) -> List[MutableMapping[str, Any]]:
+    """Extract text from PDF file.
+
+    Args:
+        pdf_path: Path to PDF file.
+
+    Returns:
+        List of segments with extracted text.
+
+    Raises:
+        RuntimeError: If pdfplumber is not available.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        raise RuntimeError(
+            "pdfplumber 未安装。请执行: pip install pdfplumber"
+        )
+
+    segments: List[MutableMapping[str, Any]] = []
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page_num, page in enumerate(pdf.pages):
+                text = page.extract_text()
+                if text and text.strip():
+                    segments.append({
+                        "start": float(page_num),
+                        "end": float(page_num + 1),
+                        "text": text.strip(),
+                        "page": page_num + 1,
+                    })
+    except Exception as exc:
+        raise RuntimeError(f"PDF 解析失败: {exc}")
+
+    if not segments:
+        raise RuntimeError("PDF 文件中未提取到文本内容")
+
+    return segments
+
+
+def _transcribe_local_audio(
+    audio_path: str,
+    language: str,
+    cache_dir: str,
+    streaming: bool = True,
+) -> List[MutableMapping[str, Any]]:
+    """Transcribe local audio file using Azure OpenAI.
+
+    Args:
+        audio_path: Path to audio file.
+        language: Language code for transcription.
+        cache_dir: Directory for caching results.
+        streaming: Whether to use streaming mode.
+
+    Returns:
+        List of transcript segments.
+    """
+    # This uses the existing Azure diarization infrastructure
+    # Create a file:// URL to pass to existing functions
+    abs_path = os.path.abspath(audio_path)
+    return _transcribe_audio_file_direct(abs_path, language, cache_dir, streaming)
+
+
+def _transcribe_audio_file_direct(
+    audio_path: str,
+    language: str,
+    cache_dir: str,
+    streaming: bool = True,
+) -> List[MutableMapping[str, Any]]:
+    """Direct transcription of audio file via Azure Whisper.
+
+    Args:
+        audio_path: Absolute path to audio file.
+        language: Language code.
+        cache_dir: Cache directory.
+        streaming: Whether to use streaming.
+
+    Returns:
+        List of transcript segments.
+    """
+    azure_key = os.getenv("AZURE_OPENAI_API_KEY")
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+
+    if not azure_key or not azure_endpoint:
+        raise RuntimeError(
+            "Azure OpenAI 凭据缺失。请设置 AZURE_OPENAI_API_KEY 与 AZURE_OPENAI_ENDPOINT。"
+        )
+
+    model = os.getenv("AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT") or "gpt-4o-transcribe-diarize"
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION") or "2024-06-01"
+
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # Check for cached result
+    cache_file = os.path.join(cache_dir, "transcription.json")
+    if os.path.isfile(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+                if cached.get("segments"):
+                    return cached["segments"]
+        except Exception:
+            pass
+
+    try:
+        from openai import AzureOpenAI
+    except ImportError:
+        raise RuntimeError("openai 库未安装。请执行: pip install openai")
+
+    client = AzureOpenAI(
+        api_key=azure_key,
+        api_version=api_version,
+        azure_endpoint=azure_endpoint,
+        http_client=_create_azure_http_client(),
+    )
+
+    with open(audio_path, "rb") as audio_file:
+        response = client.audio.transcriptions.create(
+            model=model,
+            file=audio_file,
+            language=language,
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
+        )
+
+    segments: List[MutableMapping[str, Any]] = []
+    if hasattr(response, "segments") and response.segments:
+        for seg in response.segments:
+            segments.append({
+                "start": getattr(seg, "start", 0.0),
+                "end": getattr(seg, "end", 0.0),
+                "text": getattr(seg, "text", ""),
+            })
+    elif hasattr(response, "text") and response.text:
+        segments.append({
+            "start": 0.0,
+            "end": 0.0,
+            "text": response.text,
+        })
+
+    # Cache result
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump({"segments": segments}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    return segments
+
+
+def _process_local_file(
+    file_path: str,
+    language: str,
+    streaming: bool = True,
+) -> List[MutableMapping[str, Any]]:
+    """Process a local file and return transcript segments.
+
+    Args:
+        file_path: Path to local file.
+        language: Language code for transcription.
+        streaming: Whether to use streaming mode for Azure.
+
+    Returns:
+        List of transcript segments.
+
+    Raises:
+        FileNotFoundError: If file does not exist.
+        ValueError: If file type is not supported.
+    """
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"文件不存在: {file_path}")
+
+    file_type = _detect_file_type(file_path)
+    cache_dir = _resolve_file_cache_dir(file_path)
+
+    if file_type == "unknown":
+        supported = (
+            list(SUPPORTED_AUDIO_EXTENSIONS)
+            + list(SUPPORTED_VIDEO_EXTENSIONS)
+            + list(SUPPORTED_DOCUMENT_EXTENSIONS)
+        )
+        raise ValueError(
+            f"不支持的文件类型: {Path(file_path).suffix}。"
+            f"支持的格式: {', '.join(sorted(supported))}"
+        )
+
+    if file_type == "document":
+        return _extract_text_from_pdf(file_path)
+
+    if file_type == "video":
+        # Extract audio first
+        audio_path = _extract_audio_from_video(file_path, cache_dir)
+    else:
+        audio_path = file_path
+
+    return _transcribe_local_audio(audio_path, language, cache_dir, streaming)
+
+
+def _create_azure_http_client() -> Optional["httpx.Client"]:
+    """Create an httpx client with proxy disabled for Azure OpenAI calls.
+
+    Azure OpenAI endpoints are directly accessible and should not go through
+    local proxy servers which may timeout during long audio transcription.
+
+    Returns:
+        httpx.Client configured with proxy=None and extended timeouts,
+        or None if httpx is not available.
+    """
+    if not _HTTPX_AVAILABLE or httpx is None:
+        return None
+    return httpx.Client(
+        proxy=None,  # Explicitly disable proxy for Azure endpoints
+        timeout=httpx.Timeout(600.0, connect=30.0),  # 10min timeout for large audio
+    )
+
+
+def _call_responses_api(
+    *,
+    endpoint: str,
+    api_key: str,
+    deployment: str,
+    messages: List[Dict[str, Any]],
+    max_output_tokens: int = 4096,
+    api_version: str | None = None,
+) -> str:
+    """Call Azure OpenAI Responses API using raw httpx (no OpenAI SDK).
+
+    Fixes three bugs in the previous OpenAI-SDK-based path:
+    1. URL: ``/openai/responses?api-version=...`` (not ``/openai/v1/responses``)
+    2. Auth: ``api-key`` header (not ``Authorization: Bearer``)
+    3. Proxy: bypassed via ``proxy=None`` (reuses ``_create_azure_http_client``)
+
+    Includes a single automatic retry on 5xx / 429 with 3 s backoff.
+
+    Returns:
+        The ``output_text`` string from the Responses API response.
+
+    Raises:
+        RuntimeError: if httpx is unavailable or the API returns an error
+            after retry.
+    """
+    import time as _time
+
+    if not _HTTPX_AVAILABLE or httpx is None:
+        raise RuntimeError("httpx is required for _call_responses_api")
+
+    base = _build_responses_base_url(endpoint)
+    version = api_version or os.getenv(
+        "AZURE_OPENAI_API_VERSION", "2025-03-01-preview"
+    )
+    url = f"{base}/responses?api-version={version}"
+
+    headers = {
+        "api-key": api_key,
+        "Content-Type": "application/json",
+    }
+
+    # Build input in Responses API format
+    input_messages: List[Dict[str, Any]] = []
+    for msg in messages:
+        input_messages.append(
+            {
+                "role": msg["role"],
+                "content": [{"type": "input_text", "text": msg["content"]}],
+            }
+        )
+
+    payload: Dict[str, Any] = {
+        "model": deployment,
+        "input": input_messages,
+        "max_output_tokens": max_output_tokens,
+    }
+
+    client = _create_azure_http_client()
+    if client is None:
+        raise RuntimeError("httpx is required for _call_responses_api")
+
+    max_retries = 1
+    last_exc: Exception | None = None
+    try:
+        for attempt in range(max_retries + 1):
+            try:
+                resp = client.post(url, headers=headers, json=payload)
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
+                    _time.sleep(3)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                status = data.get("status", "")
+                # Extract output_text from response
+                output_text = data.get("output_text")
+                if output_text:
+                    if status == "incomplete":
+                        logging.warning(
+                            "_call_responses_api: status=incomplete "
+                            "(max_output_tokens=%d hit?), returning partial text",
+                            max_output_tokens,
+                        )
+                    return str(output_text)
+                # Fallback: parse output array (works for incomplete responses too)
+                output = data.get("output", [])
+                texts: List[str] = []
+                for item in output:
+                    if isinstance(item, dict):
+                        for c in item.get("content", []):
+                            if isinstance(c, dict) and c.get("text"):
+                                texts.append(c["text"])
+                if texts:
+                    if status == "incomplete":
+                        logging.warning(
+                            "_call_responses_api: status=incomplete, "
+                            "returning partial text from output array",
+                        )
+                    return "\n".join(texts)
+                if status == "incomplete":
+                    raise RuntimeError(
+                        f"Azure Responses API returned status=incomplete with no output text. "
+                        f"Try increasing max_output_tokens (current: {max_output_tokens}). "
+                        f"Response: {json.dumps(data)[:300]}"
+                    )
+                raise RuntimeError(
+                    f"No output_text in Responses API response: {json.dumps(data)[:500]}"
+                )
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    status = getattr(getattr(exc, "response", None), "status_code", None)
+                    if status in (429, 500, 502, 503, 504):
+                        _time.sleep(3)
+                        continue
+                raise
+    finally:
+        client.close()
+
+    # Should not reach here, but satisfy type checker
+    raise RuntimeError(f"_call_responses_api failed: {last_exc}")
+
 
 def _getenv(*keys: str) -> Optional[str]:
     """Return the first defined environment variable among keys."""
@@ -197,6 +826,9 @@ _FORCED_AUDIO_HOST_SUFFIXES = (
 )
 _MEDIA_PATH_EXTENSIONS = (".mp3", ".m4a", ".aac", ".wav", ".flac")
 
+# Cache for smart content type detection (URL -> content_type)
+_CONTENT_TYPE_CACHE: Dict[str, str] = {}
+
 
 SUMMARY_PROMPT = '''
 你是一个可以帮助用户完成AI相关文章翻译和总结的助手。
@@ -282,13 +914,546 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         Process exit code, 0 on success, non-zero on failure.
     """
 
+    # Check if first arg is a subcommand
+    args_list = list(argv) if argv is not None else sys.argv[1:]
+    if args_list:
+        subcommand = args_list[0]
+        if subcommand == "serve":
+            return _run_serve_command(args_list[1:])
+        if subcommand == "doctor":
+            return _run_doctor_command(args_list[1:])
+        if subcommand == "init":
+            return _run_init_command(args_list[1:])
+
+    # Default behavior: summarize command
+    return _run_summarize_command(argv)
+
+
+def _run_serve_command(argv: Sequence[str]) -> int:
+    """Run the companion server for Chrome extension support.
+
+    Args:
+        argv: Arguments for the serve subcommand.
+
+    Returns:
+        Process exit code.
+    """
+    parser = argparse.ArgumentParser(
+        prog="any2summary serve",
+        description="Start local companion server for Chrome extension audio transcription.",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind to (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port to bind to (default: 8765)",
+    )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable auto-reload for development",
+    )
+
+    args = parser.parse_args(argv)
+
+    try:
+        from any2summary.server import run_server
+        run_server(host=args.host, port=args.port, reload=args.reload)
+        return 0
+    except RuntimeError as exc:
+        sys.stderr.write(f"错误: {exc}\n")
+        return 1
+    except KeyboardInterrupt:
+        sys.stderr.write("\n服务器已停止\n")
+        return 0
+
+
+def _run_doctor_command(argv: Sequence[str]) -> int:
+    """Run health check diagnostics for any2summary dependencies.
+
+    Args:
+        argv: Arguments for the doctor subcommand.
+
+    Returns:
+        Process exit code. 0 if all checks pass, 1 if any critical check fails.
+    """
+    from any2summary.errors import (
+        ErrorCode,
+        get_error_info,
+        map_http_status_to_error,
+        create_package_error,
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="any2summary doctor",
+        description="Check system dependencies and service connectivity.",
+    )
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Attempt to automatically fix recoverable issues",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output results in JSON format for programmatic use",
+    )
+    args = parser.parse_args(argv)
+
+    # Track issues for potential auto-fix and JSON output
+    issues: list[dict] = []
+    fixes_attempted = 0
+    fixes_succeeded = 0
+
+    checks_passed = 0
+    checks_failed = 0
+
+    def _check(
+        name: str,
+        condition: bool,
+        error_msg: str = "",
+        error_code: ErrorCode | None = None,
+    ) -> bool:
+        nonlocal checks_passed, checks_failed
+        if condition:
+            if not args.json:
+                print(f"  ✓ {name}")
+            checks_passed += 1
+            return True
+        else:
+            if not args.json:
+                msg = f"  ✗ {name}"
+                if error_msg:
+                    msg += f" - {error_msg}"
+                print(msg)
+            checks_failed += 1
+
+            # Track issue for --fix and --json
+            if error_code:
+                error_info = get_error_info(error_code)
+                issues.append({
+                    "code": int(error_code),
+                    "name": name,
+                    "message": error_info.message,
+                    "suggestion": error_info.suggestion,
+                    "auto_fixable": error_info.auto_fix is not None,
+                })
+            return False
+
+    def _try_fix(error_code: ErrorCode) -> bool:
+        """Attempt to fix an issue if --fix is enabled."""
+        nonlocal fixes_attempted, fixes_succeeded
+        if not args.fix:
+            return False
+
+        error_info = get_error_info(error_code)
+        if error_info.auto_fix is None:
+            return False
+
+        fixes_attempted += 1
+        if not args.json:
+            print(f"    🔧 尝试自动修复...")
+
+        success = error_info.auto_fix()
+        if success:
+            fixes_succeeded += 1
+            if not args.json:
+                print(f"    ✅ 修复成功")
+        else:
+            if not args.json:
+                print(f"    ❌ 修复失败")
+        return success
+
+    if not args.json:
+        print("🩺 any2summary 健康检查\n")
+
+    # 1. Python version check
+    py_version = sys.version_info
+    py_ok = py_version >= (3, 10)
+    _check(
+        f"Python 版本 ({py_version.major}.{py_version.minor}.{py_version.micro})",
+        py_ok,
+        "需要 Python >= 3.10",
+        ErrorCode.PYTHON_VERSION_TOO_OLD if not py_ok else None,
+    )
+
+    # 2. ffmpeg check
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffmpeg_version = ""
+    if ffmpeg_path:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            first_line = result.stdout.split("\n")[0] if result.stdout else ""
+            if "version" in first_line.lower():
+                ffmpeg_version = first_line.split()[2] if len(first_line.split()) > 2 else ""
+        except Exception:
+            pass
+    ffmpeg_info = f"ffmpeg ({ffmpeg_version})" if ffmpeg_version else "ffmpeg"
+    if not _check(
+        ffmpeg_info,
+        ffmpeg_path is not None,
+        "请安装 ffmpeg: brew install ffmpeg",
+        ErrorCode.FFMPEG_NOT_INSTALLED if not ffmpeg_path else None,
+    ):
+        _try_fix(ErrorCode.FFMPEG_NOT_INSTALLED)
+
+    # 3. yt-dlp check
+    ytdlp_path = shutil.which("yt-dlp")
+    ytdlp_version = ""
+    if ytdlp_path:
+        try:
+            result = subprocess.run(
+                ["yt-dlp", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            ytdlp_version = result.stdout.strip() if result.stdout else ""
+        except Exception:
+            pass
+    ytdlp_info = f"yt-dlp ({ytdlp_version})" if ytdlp_version else "yt-dlp"
+    if not _check(
+        ytdlp_info,
+        ytdlp_path is not None,
+        "请安装 yt-dlp: pip install yt-dlp",
+        ErrorCode.YTDLP_NOT_INSTALLED if not ytdlp_path else None,
+    ):
+        _try_fix(ErrorCode.YTDLP_NOT_INSTALLED)
+
+    # 4. Python packages check
+    if not args.json:
+        print("\n  Python 依赖包:")
+    required_packages = [
+        ("numpy", "numpy"),
+        ("httpx", "httpx"),
+        ("youtube_transcript_api", "youtube-transcript-api"),
+        ("openai", "openai"),
+    ]
+
+    for module_name, package_name in required_packages:
+        try:
+            __import__(module_name)
+            _check(f"    {package_name}", True)
+        except ImportError:
+            pkg_error = create_package_error(module_name, package_name)
+            if not _check(
+                f"    {package_name}",
+                False,
+                f"pip install {package_name}",
+                ErrorCode.PACKAGE_MISSING,
+            ):
+                if args.fix and pkg_error.auto_fix:
+                    fixes_attempted += 1
+                    if not args.json:
+                        print(f"      🔧 尝试安装 {package_name}...")
+                    if pkg_error.auto_fix():
+                        fixes_succeeded += 1
+                        if not args.json:
+                            print(f"      ✅ 安装成功")
+                    else:
+                        if not args.json:
+                            print(f"      ❌ 安装失败")
+
+    # 5. Optional packages
+    if not args.json:
+        print("\n  可选依赖包:")
+    optional_packages = [
+        ("rich", "rich", "进度条美化"),
+        ("pdfplumber", "pdfplumber", "PDF 文件处理"),
+    ]
+
+    for module_name, package_name, description in optional_packages:
+        try:
+            __import__(module_name)
+            if not args.json:
+                print(f"  ✓ {package_name} ({description})")
+        except ImportError:
+            if not args.json:
+                print(f"  ○ {package_name} ({description}) - 未安装")
+
+    # 6. .env file check
+    if not args.json:
+        print("\n  配置文件:")
+    env_path = Path(".env")
+    env_exists = env_path.is_file()
+    if not _check(
+        ".env 文件",
+        env_exists,
+        "运行 `any2summary init` 创建配置文件",
+        ErrorCode.ENV_FILE_MISSING if not env_exists else None,
+    ):
+        _try_fix(ErrorCode.ENV_FILE_MISSING)
+
+    # 7. Environment variables check
+    if not args.json:
+        print("\n  环境变量:")
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    azure_key = os.getenv("AZURE_OPENAI_API_KEY")
+
+    endpoint_valid = azure_endpoint is not None and azure_endpoint.strip() != ""
+    key_valid = azure_key is not None and azure_key.strip() != ""
+
+    _check(
+        "AZURE_OPENAI_ENDPOINT",
+        endpoint_valid,
+        "未设置",
+        ErrorCode.AZURE_ENDPOINT_MISSING if not endpoint_valid else None,
+    )
+    _check(
+        "AZURE_OPENAI_API_KEY",
+        key_valid,
+        "未设置",
+        ErrorCode.AZURE_KEY_MISSING if not key_valid else None,
+    )
+
+    # Optional deployment names
+    transcription_deployment = os.getenv("AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT")
+    summary_deployment = os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT")
+    if not args.json:
+        if transcription_deployment:
+            print(f"  ✓ AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT = {transcription_deployment}")
+        else:
+            print("  ○ AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT - 未设置（将使用默认值）")
+        if summary_deployment:
+            print(f"  ✓ AZURE_OPENAI_SUMMARY_DEPLOYMENT = {summary_deployment}")
+        else:
+            print("  ○ AZURE_OPENAI_SUMMARY_DEPLOYMENT - 未设置（将使用默认值）")
+
+    # 8. Azure connectivity test
+    if not args.json:
+        print("\n  Azure 连通性:")
+    azure_status_code = None
+    if azure_endpoint and azure_key:
+        try:
+            if _HTTPX_AVAILABLE and httpx is not None:
+                # Send a simple request to check connectivity
+                test_url = azure_endpoint.rstrip("/") + "/openai/models?api-version=2024-02-01"
+                client = httpx.Client(timeout=10.0)
+                response = client.get(
+                    test_url,
+                    headers={"api-key": azure_key},
+                )
+                azure_status_code = response.status_code
+                if response.status_code == 200:
+                    _check("Azure OpenAI 端点可达", True)
+                elif response.status_code in (401, 403):
+                    # Auth issue - endpoint reachable but key invalid
+                    error_code = map_http_status_to_error(response.status_code)
+                    _check(
+                        "Azure OpenAI 认证",
+                        False,
+                        f"HTTP {response.status_code} - API 密钥无效或权限不足",
+                        error_code,
+                    )
+                else:
+                    error_code = map_http_status_to_error(response.status_code)
+                    _check(
+                        "Azure OpenAI 端点",
+                        False,
+                        f"HTTP {response.status_code}",
+                        error_code,
+                    )
+            else:
+                if not args.json:
+                    print("  ○ Azure 连通性测试 - httpx 不可用，跳过")
+        except Exception as exc:
+            _check(
+                "Azure OpenAI 端点可达",
+                False,
+                str(exc)[:50],
+                ErrorCode.AZURE_UNREACHABLE,
+            )
+    else:
+        if not args.json:
+            print("  ○ Azure 连通性测试 - 跳过（缺少凭据）")
+
+    # 9. Cache directory check
+    if not args.json:
+        print("\n  缓存目录:")
+    cache_dir = Path(tempfile.gettempdir()) / "any2summary_cache"
+    cache_exists = cache_dir.exists()
+    if cache_exists:
+        _check(f"缓存目录 ({cache_dir})", True)
+    else:
+        if not args.json:
+            print(f"  ○ 缓存目录 ({cache_dir}) - 尚未创建")
+
+    # Summary
+    total = checks_passed + checks_failed
+
+    # JSON output mode
+    if args.json:
+        import json
+        result = {
+            "status": "ok" if checks_failed == 0 else "failed",
+            "checks_passed": checks_passed,
+            "checks_failed": checks_failed,
+            "total_checks": total,
+            "issues": issues,
+            "fixes_attempted": fixes_attempted,
+            "fixes_succeeded": fixes_succeeded,
+        }
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if checks_failed == 0 else 1
+
+    # Normal output summary
+    print("\n" + "─" * 50)
+    if checks_failed == 0:
+        print(f"✅ 所有检查通过 ({checks_passed}/{total})")
+        return 0
+    else:
+        print(f"⚠️  {checks_failed} 项检查未通过，{checks_passed} 项通过")
+
+        # Show fix summary if --fix was used
+        if args.fix and fixes_attempted > 0:
+            print(f"\n🔧 自动修复：{fixes_succeeded}/{fixes_attempted} 项成功")
+
+        # Show suggestions for remaining issues
+        if issues:
+            print("\n💡 修复建议：")
+            for issue in issues[:5]:  # Show at most 5 suggestions
+                if issue.get("auto_fixable") and not args.fix:
+                    print(f"   • [{issue['code']}] {issue['message']}")
+                    print(f"     运行 `any2summary doctor --fix` 可自动修复")
+                else:
+                    print(f"   • [{issue['code']}] {issue['message']}")
+                    print(f"     {issue['suggestion']}")
+
+        print("\n💡 提示：运行 `any2summary init` 可以快速配置 Azure 凭据")
+        return 1
+
+
+def _run_init_command(argv: Sequence[str]) -> int:
+    """Run interactive configuration wizard.
+
+    Args:
+        argv: Arguments for the init subcommand.
+
+    Returns:
+        Process exit code.
+    """
+    parser = argparse.ArgumentParser(
+        prog="any2summary init",
+        description="Interactive configuration wizard for any2summary.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing .env file without prompting",
+    )
+    args = parser.parse_args(argv)
+
+    print("🚀 any2summary 配置向导\n")
+
+    env_path = Path(".env")
+    if env_path.exists() and not args.force:
+        response = input(f"⚠️  {env_path} 已存在，是否覆盖？[y/N] ").strip().lower()
+        if response not in ("y", "yes"):
+            print("已取消。")
+            return 0
+
+    print("请输入 Azure OpenAI 配置信息（直接回车跳过）:\n")
+
+    # Collect configuration
+    endpoint = input("Azure OpenAI Endpoint (例如 https://xxx.openai.azure.com): ").strip()
+    api_key = input("Azure OpenAI API Key: ").strip()
+    transcription_deployment = input(
+        "转写模型部署名 (默认: whisper): "
+    ).strip() or "whisper"
+    summary_deployment = input(
+        "摘要模型部署名 (默认: gpt-5-pro): "
+    ).strip() or "gpt-5-pro"
+
+    # Validate endpoint format
+    if endpoint and not endpoint.startswith("https://"):
+        print("⚠️  Endpoint 应以 https:// 开头")
+        endpoint = "https://" + endpoint
+
+    # Test connectivity if credentials provided
+    if endpoint and api_key:
+        print("\n🔍 验证 Azure 连通性...")
+        try:
+            if _HTTPX_AVAILABLE and httpx is not None:
+                test_url = endpoint.rstrip("/") + "/openai/models?api-version=2024-02-01"
+                client = httpx.Client(timeout=10.0)
+                response = client.get(
+                    test_url,
+                    headers={"api-key": api_key},
+                )
+                if response.status_code == 200:
+                    print("✓ Azure 连接成功！")
+                elif response.status_code in (401, 403):
+                    print("⚠️  Azure 端点可达，但 API Key 可能无效")
+                else:
+                    print(f"⚠️  Azure 返回状态码: {response.status_code}")
+            else:
+                print("○ 跳过连通性测试（httpx 不可用）")
+        except Exception as exc:
+            print(f"⚠️  连接测试失败: {exc}")
+
+    # Generate .env content
+    env_content = f"""# any2summary Azure OpenAI 配置
+# 由 `any2summary init` 自动生成
+
+AZURE_OPENAI_ENDPOINT={endpoint}
+AZURE_OPENAI_API_KEY={api_key}
+AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT={transcription_deployment}
+AZURE_OPENAI_SUMMARY_DEPLOYMENT={summary_deployment}
+"""
+
+    # Write file
+    try:
+        env_path.write_text(env_content, encoding="utf-8")
+        print(f"\n✅ 配置已保存到 {env_path}")
+    except OSError as exc:
+        print(f"\n❌ 写入文件失败: {exc}")
+        return 1
+
+    # Show summary
+    print("\n📋 配置摘要:")
+    print(f"   Endpoint: {endpoint or '(未设置)'}")
+    print(f"   API Key: {'*' * 8 if api_key else '(未设置)'}")
+    print(f"   转写模型: {transcription_deployment}")
+    print(f"   摘要模型: {summary_deployment}")
+
+    print("\n💡 提示：运行 `any2summary doctor` 可以验证配置是否正确")
+    return 0
+
+
+def _run_summarize_command(argv: Optional[Sequence[str]] = None) -> int:
+    """Run the main summarization command.
+
+    Args:
+        argv: Sequence of command line arguments.
+
+    Returns:
+        Process exit code.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Download YouTube captions, enrich with optional Azure OpenAI "
-            "diarization, and emit structured JSON output."
+            "diarization, and emit structured JSON output. "
+            "Supports both URLs and local files."
         )
     )
-    parser.add_argument("--url", required=True, help="YouTube video URL")
+    # Mutually exclusive group for input source
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--url", help="YouTube video URL or article URL")
+    input_group.add_argument(
+        "--file",
+        dest="local_file",
+        help="本地音视频或 PDF 文件路径（支持 mp3/m4a/wav/mp4/mkv/webm/pdf）",
+    )
     parser.add_argument(
         "--language",
         default="en",
@@ -367,6 +1532,18 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="Remove cached artifacts for the provided URL before processing.",
     )
+    parser.add_argument(
+        "--summary-length",
+        type=str,
+        choices=["brief", "standard", "detailed", "full"],
+        default="standard",
+        dest="summary_length",
+        help=(
+            "控制摘要输出的详细程度: "
+            "brief(简洁,3-5句话), standard(标准,默认), "
+            "detailed(详细,展开要点), full(完整翻译,不压缩)"
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -374,20 +1551,156 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         _getenv("ANY2SUMMARY_DOTENV", "PODCAST_TRANSFORMER_DOTENV")
     )
 
+    # Handle local file mode
+    if args.local_file:
+        return _run_single_local_file(args)
+
+    # Handle URL mode
     raw_urls = [item.strip() for item in args.url.split(",") if item and item.strip()]
     if not raw_urls:
         raise RuntimeError("--url 参数不能为空。")
 
     if len(raw_urls) == 1:
         args.url = raw_urls[0]
-        return _run_single(args)
+        return _run_single_with_retry(args)
 
     return _run_multiple(args, raw_urls)
 
 
+def _run_single_local_file(args: argparse.Namespace) -> int:
+    """Process a single local file.
+
+    Args:
+        args: Parsed command line arguments with local_file set.
+
+    Returns:
+        Process exit code.
+    """
+    file_path = args.local_file
+
+    # Validate file exists
+    if not os.path.isfile(file_path):
+        sys.stderr.write(f"错误: 文件不存在: {file_path}\n")
+        return 1
+
+    # Process file validation
+    if args.summary_prompt_file and not args.azure_summary:
+        raise RuntimeError(
+            "--summary-prompt-file 仅能与 --azure-summary 搭配使用。"
+        )
+
+    try:
+        # Process the local file
+        transcript_segments = _process_local_file(
+            file_path,
+            language=args.language,
+            streaming=args.azure_streaming,
+        )
+
+        if not transcript_segments:
+            raise RuntimeError("未能从文件中提取内容。")
+
+        # Merge segments (no diarization for local files currently)
+        merged_segments = merge_segments_with_speakers(transcript_segments, None)
+
+        # Generate summary if requested
+        summary_bundle: Optional[MutableMapping[str, Any]] = None
+        if args.azure_summary:
+            custom_prompt: Optional[str] = None
+            file_type = _detect_file_type(file_path)
+
+            if file_type == "document":
+                # Use article prompt for PDF
+                if args.article_summary_prompt_file:
+                    custom_prompt = _load_summary_prompt_file(
+                        args.article_summary_prompt_file
+                    )
+                else:
+                    custom_prompt = _load_default_article_prompt()
+            elif args.summary_prompt_file:
+                custom_prompt = _load_summary_prompt_file(args.summary_prompt_file)
+            else:
+                custom_prompt = _load_default_summary_prompt()
+
+            # Create a pseudo URL for the file
+            file_url = f"file://{os.path.abspath(file_path)}"
+
+            summary_bundle = generate_translation_summary(
+                merged_segments,
+                file_url,
+                prompt=custom_prompt,
+                metadata={"title": Path(file_path).stem, "source_type": "local_file"},
+                summary_length=args.summary_length,
+            )
+
+        # Output results
+        _output_local_file_results(
+            file_path,
+            merged_segments,
+            summary_bundle,
+        )
+
+        return 0
+
+    except FileNotFoundError as exc:
+        sys.stderr.write(f"错误: {exc}\n")
+        return 1
+    except ValueError as exc:
+        sys.stderr.write(f"错误: {exc}\n")
+        return 1
+    except RuntimeError as exc:
+        sys.stderr.write(f"错误: {exc}\n")
+        return 1
+
+
+def _output_local_file_results(
+    file_path: str,
+    segments: Sequence[MutableMapping[str, Any]],
+    summary_bundle: Optional[MutableMapping[str, Any]],
+) -> None:
+    """Output processing results for a local file.
+
+    Args:
+        file_path: Path to the processed file.
+        segments: Transcript/text segments.
+        summary_bundle: Summary results if available.
+    """
+    if summary_bundle:
+        # Save summary to file
+        summary_paths = summary_bundle.get("paths")
+        if summary_paths:
+            markdown_path = summary_paths.get("summary_markdown")
+            if markdown_path and os.path.isfile(markdown_path):
+                print(f"摘要已保存到: {markdown_path}")
+
+        # Also print to stdout
+        summary_md = summary_bundle.get("summary_markdown", "")
+        if summary_md:
+            print("\n" + "=" * 60)
+            print(summary_md)
+    else:
+        # Output raw segments as JSON
+        output = {
+            "source": file_path,
+            "segments": list(segments),
+        }
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
 def _run_multiple(args: argparse.Namespace, urls: Sequence[str]) -> int:
+    """Run multiple URLs in parallel with progress tracking.
+
+    Args:
+        args: Parsed command-line arguments.
+        urls: Sequence of URLs to process.
+
+    Returns:
+        Exit code (0 if all succeeded, 1 if any failed).
+    """
     clones = [_clone_args(args, url) for url in urls]
     max_workers = max(1, min(len(clones), os.cpu_count() or len(clones)))
+    total = len(clones)
+    completed = 0
 
     results: List[Tuple[int, str, int, str, Optional[str]]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -395,6 +1708,9 @@ def _run_multiple(args: argparse.Namespace, urls: Sequence[str]) -> int:
         for index, clone in enumerate(clones):
             future = executor.submit(_run_single_with_capture, clone)
             future_map[future] = (index, clone.url)
+
+        # Show initial progress
+        _update_progress_bar(0.0, f"批量处理: 0/{total}")
 
         for future in concurrent.futures.as_completed(future_map):
             index, url = future_map[future]
@@ -406,6 +1722,13 @@ def _run_multiple(args: argparse.Namespace, urls: Sequence[str]) -> int:
                 error = str(exc)
             error_message = str(error) if error else None
             results.append((index, url, exit_code, output, error_message))
+
+            # Update progress
+            completed += 1
+            _update_progress_bar(
+                completed / total,
+                f"批量处理: {completed}/{total}",
+            )
 
     results.sort(key=lambda item: item[0])
     final_exit_code = 0
@@ -425,20 +1748,88 @@ def _run_multiple(args: argparse.Namespace, urls: Sequence[str]) -> int:
 
 def _run_single_with_capture(args: argparse.Namespace) -> Tuple[int, str, Optional[str]]:
     buffer = io.StringIO()
-    error_message: Optional[str] = None
-    try:
-        with contextlib.redirect_stdout(buffer):
-            exit_code = _run_single(args)
-    except Exception as exc:  # pragma: no cover - error path
-        exit_code = 1
-        error_message = str(exc)
-    return exit_code, buffer.getvalue(), error_message
+    attempt = 0
+    last_error: Optional[str] = None
+
+    while attempt < MAX_SINGLE_RUN_ATTEMPTS:
+        attempt += 1
+        buffer.seek(0)
+        buffer.truncate(0)
+        try:
+            with contextlib.redirect_stdout(buffer):
+                exit_code = _run_single(args)
+        except Exception as exc:  # pragma: no cover - error path
+            last_error = str(exc)
+            if attempt >= MAX_SINGLE_RUN_ATTEMPTS:
+                return 1, buffer.getvalue(), last_error
+            _LOGGER.warning(
+                "Run attempt %d/%d for %s failed with error: %s",
+                attempt,
+                MAX_SINGLE_RUN_ATTEMPTS,
+                getattr(args, "url", "<unknown>"),
+                exc,
+            )
+            last_error = None
+            continue
+
+        if exit_code == 0:
+            return 0, buffer.getvalue(), None
+
+        last_error = f"Exit code {exit_code} after {attempt} attempts"
+        if attempt >= MAX_SINGLE_RUN_ATTEMPTS:
+            return exit_code, buffer.getvalue(), last_error
+        _LOGGER.warning(
+            "Run attempt %d/%d for %s exited with %s; retrying once.",
+            attempt,
+            MAX_SINGLE_RUN_ATTEMPTS,
+            getattr(args, "url", "<unknown>"),
+            exit_code,
+        )
+
+    return 1, buffer.getvalue(), last_error
 
 
 def _clone_args(args: argparse.Namespace, url: str) -> argparse.Namespace:
     cloned = copy.deepcopy(args)
     cloned.url = url
     return cloned
+
+
+def _run_single_with_retry(args: argparse.Namespace) -> int:
+    """Execute _run_single with a single automatic retry on failure."""
+
+    attempt = 0
+    last_exit_code = 1
+    while attempt < MAX_SINGLE_RUN_ATTEMPTS:
+        attempt += 1
+        try:
+            exit_code = _run_single(args)
+        except Exception as exc:
+            if attempt >= MAX_SINGLE_RUN_ATTEMPTS:
+                raise
+            _LOGGER.warning(
+                "Run attempt %d/%d for %s failed with error: %s",
+                attempt,
+                MAX_SINGLE_RUN_ATTEMPTS,
+                getattr(args, "url", "<unknown>"),
+                exc,
+            )
+            continue
+
+        last_exit_code = exit_code
+        if exit_code == 0:
+            return 0
+        if attempt >= MAX_SINGLE_RUN_ATTEMPTS:
+            return exit_code
+        _LOGGER.warning(
+            "Run attempt %d/%d for %s exited with %s; retrying once.",
+            attempt,
+            MAX_SINGLE_RUN_ATTEMPTS,
+            getattr(args, "url", "<unknown>"),
+            exit_code,
+        )
+
+    return last_exit_code
 
 
 def _run_single(args: argparse.Namespace) -> int:
@@ -464,6 +1855,7 @@ def _run_single(args: argparse.Namespace) -> int:
     fallback_languages = args.fallback_languages or [args.language]
     known_speaker_pairs = _parse_known_speakers(args.known_speakers)
     known_speaker_names = args.known_speaker_names or None
+    is_probable_article = _is_probable_article_url(args.url)
 
     transcript_segments: Optional[
         List[MutableMapping[str, float | str]]
@@ -471,16 +1863,7 @@ def _run_single(args: argparse.Namespace) -> int:
     transcript_error: Optional[RuntimeError] = None
     article_bundle: Optional[Mapping[str, Any]] = None
 
-    try:
-        transcript_segments = fetch_transcript_with_metadata(
-            video_url=args.url,
-            language=args.language,
-            fallback_languages=fallback_languages,
-        )
-    except RuntimeError as exc:
-        transcript_error = exc
-
-    if transcript_segments is None and _is_probable_article_url(args.url):
+    if is_probable_article:
         article_bundle = _maybe_fetch_article_assets(args.url)
         if article_bundle is not None:
             transcript_segments = [
@@ -488,16 +1871,25 @@ def _run_single(args: argparse.Namespace) -> int:
                 for segment in article_bundle.get("segments", [])
                 if isinstance(segment, Mapping)
             ]
-            if transcript_segments:
-                transcript_error = None
-            else:
+            if not transcript_segments:
                 article_bundle = None
+        if transcript_segments is None:
+            transcript_segments = []
+    else:
+        try:
+            transcript_segments = fetch_transcript_with_metadata(
+                video_url=args.url,
+                language=args.language,
+                fallback_languages=fallback_languages,
+            )
+        except RuntimeError as exc:
+            transcript_error = exc
 
     diarization_segments: Optional[List[MutableMapping[str, float | str]]] = None
     azure_payload: Optional[MutableMapping[str, Any]] = None
 
     should_use_azure = False
-    if article_bundle is not None:
+    if article_bundle is not None or is_probable_article:
         should_use_azure = False
     else:
         transcripts_available = bool(transcript_segments)
@@ -550,11 +1942,9 @@ def _run_single(args: argparse.Namespace) -> int:
                     raise transcript_error
                 raise RuntimeError("Azure OpenAI 未返回可用的转写结果。")
 
-    if (
-        not transcript_segments
-        and article_bundle is None
-        and _is_probable_article_url(args.url)
-    ):
+    is_probable_article = _is_probable_article_url(args.url)
+
+    if not transcript_segments and article_bundle is None and is_probable_article:
         article_bundle = _maybe_fetch_article_assets(args.url)
         if article_bundle is not None:
             transcript_segments = [
@@ -581,6 +1971,7 @@ def _run_single(args: argparse.Namespace) -> int:
     summary_bundle: Optional[MutableMapping[str, Any]] = None
     summary_paths: Optional[Mapping[str, str]] = None
     article_metadata = article_bundle.get("metadata") if article_bundle else None
+    is_article = bool(article_metadata and str(article_metadata.get("source_type")) == "article")
     if args.azure_summary:
         custom_prompt: Optional[str] = None
         if article_bundle is not None:
@@ -599,12 +1990,20 @@ def _run_single(args: argparse.Namespace) -> int:
             args.url,
             prompt=custom_prompt,
             metadata=article_metadata,
+            summary_length=args.summary_length,
         )
+        if is_article:
+            summary_bundle["summary_markdown"] = _append_article_assets(
+                summary_bundle.get("summary_markdown", ""), article_metadata
+            )
+        should_write_timeline = not _is_probable_article_url(args.url) and not is_article
+
         summary_paths = _write_summary_documents(
             args.url,
             summary_bundle.get("summary_markdown", ""),
             summary_bundle.get("timeline_markdown", ""),
             summary_bundle.get("file_base", "summary"),
+            write_timeline=should_write_timeline,
         )
 
     payload: Union[List[MutableMapping[str, float | str]], MutableMapping[str, Any]]
@@ -617,7 +2016,9 @@ def _run_single(args: argparse.Namespace) -> int:
         }
         if summary_paths is not None:
             payload["summary_path"] = summary_paths.get("summary")
-            payload["timeline_path"] = summary_paths.get("timeline")
+            timeline_path_value = summary_paths.get("timeline")
+            if timeline_path_value is not None:
+                payload["timeline_path"] = timeline_path_value
             payload["summary_paths"] = summary_paths
         if "total_words" in summary_bundle:
             payload["total_words"] = summary_bundle["total_words"]
@@ -633,6 +2034,8 @@ def _run_single(args: argparse.Namespace) -> int:
             "content_path": article_bundle.get("content_path"),
             "metadata_path": article_bundle.get("metadata_path"),
             "icon_path": article_bundle.get("icon_path"),
+            "image_urls": article_bundle.get("image_urls", []),
+            "table_urls": article_bundle.get("table_urls", []),
         }
 
     json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
@@ -820,22 +2223,27 @@ def perform_azure_diarization(
         A mapping containing `speakers` and `transcript` lists.
     """
 
+    _LOGGER.info("[Diarization] Starting diarization for: %s", video_url)
+
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION") or "2025-03-01-preview"
+    azure_api_version = "2025-03-01-preview"
     deployment = (
         os.getenv("AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT")
         or "gpt-4o-transcribe-diarize"
     )
     if not azure_key or not azure_endpoint:
+        _LOGGER.error("[Diarization] Azure credentials missing")
         raise RuntimeError(
             "Azure OpenAI 凭据缺失。请设置 AZURE_OPENAI_API_KEY与 AZURE_OPENAI_ENDPOINT。"
         )
 
     cache_directory = _resolve_video_cache_dir(video_url)
     cache_path = _diarization_cache_path(cache_directory)
+    _LOGGER.info("[Diarization] Checking cache at: %s", cache_path)
     cached_payload = _load_cached_diarization(cache_path)
     if cached_payload is not None:
+        _LOGGER.info("[Diarization] Using cached diarization result")
         return cached_payload
 
     try:
@@ -845,12 +2253,18 @@ def perform_azure_diarization(
             "openai 库未安装。请执行 `pip install openai`."
         ) from exc
 
+    _LOGGER.info("[Diarization] Preparing audio cache...")
     wav_path = _prepare_audio_cache(video_url)
+    _LOGGER.info("[Diarization] Audio cached at: %s", wav_path)
+
+    _LOGGER.info("[Diarization] Splitting audio into segments...")
     segment_paths = _ensure_audio_segments(wav_path)
     if not segment_paths:
+        _LOGGER.error("[Diarization] Audio segmentation failed")
         raise RuntimeError(
             "音频缓存文件不存在或生成失败，请确认 ffmpeg 可用。"
         )
+    _LOGGER.info("[Diarization] Audio split into %d segments", len(segment_paths))
 
     segment_durations: List[float] = []
     for path in segment_paths:
@@ -882,6 +2296,7 @@ def perform_azure_diarization(
         api_key=azure_key,
         api_version=azure_api_version,
         azure_endpoint=azure_endpoint,
+        http_client=_create_azure_http_client(),
     )
     openai_module = sys.modules.get("openai")
     bad_request_error: Optional[type[BaseException]]
@@ -909,9 +2324,48 @@ def perform_azure_diarization(
             if stripped not in request_known_names:
                 request_known_names.append(stripped)
 
+    aggregated_diarization: List[MutableMapping[str, float | str]] = []
+    aggregated_transcript: List[MutableMapping[str, float | str]] = []
+    segment_offset = 0.0
+    processed_duration = 0.0
+    produced_tokens = 0.0
+    segments_done = 0
+
+    checkpoint_path = os.path.join(cache_directory, "diarization.partial.json")
+    partial_payload = _load_cached_diarization(checkpoint_path)
+    if partial_payload:
+        diarization_segments = partial_payload.get("speakers")
+        transcript_segments = partial_payload.get("transcript")
+        if isinstance(diarization_segments, list):
+            aggregated_diarization.extend(diarization_segments)
+        if isinstance(transcript_segments, list):
+            aggregated_transcript.extend(transcript_segments)
+        segment_offset = float(partial_payload.get("segment_offset", 0.0) or 0.0)
+        processed_duration = float(partial_payload.get("processed_duration", 0.0) or 0.0)
+        produced_tokens = float(partial_payload.get("produced_tokens", 0.0) or 0.0)
+        segments_done = int(partial_payload.get("segments_done", len(aggregated_transcript)) or 0)
+        segments_done = max(0, min(segments_done, total_segments))
+        if not segment_offset and aggregated_transcript:
+            segment_offset = max(
+                (
+                    float(item.get("end", item.get("start", 0.0)))
+                    for item in aggregated_transcript
+                ),
+                default=0.0,
+            )
+        if processed_duration <= 0.0 and segments_done > 0:
+            processed_duration = sum(segment_durations[:segments_done])
+
     if total_segments > 0:
         _update_progress_bar(
-            0.0,
+            _compute_progress_ratio(
+                processed_duration,
+                total_audio_duration,
+                produced_tokens,
+                total_estimated_tokens,
+                segments_done,
+                total_segments,
+            ),
             _format_progress_detail(
                 processed_duration,
                 total_audio_duration,
@@ -922,75 +2376,103 @@ def perform_azure_diarization(
             ),
         )
 
-    aggregated_diarization: List[MutableMapping[str, float | str]] = []
-    aggregated_transcript: List[MutableMapping[str, float | str]] = []
-    segment_offset = 0.0
-
+    _LOGGER.info("[Diarization] Starting Azure API transcription loop...")
     for index, segment_path in enumerate(segment_paths, start=1):
         segment_duration = (
             segment_durations[index - 1]
             if 0 <= index - 1 < len(segment_durations)
             else 0.0
         )
+        if segments_done >= index:
+            _LOGGER.debug("[Diarization] Skipping segment %d (already processed)", index)
+            continue
+        _LOGGER.info("[Diarization] Processing segment %d/%d: %s",
+                     index, len(segment_paths), os.path.basename(segment_path))
+        max_attempts = 2
+        attempt = 1
         stream_tokens = 0.0
+        while True:
+            stream_tokens = 0.0
+            try:
+                with open(segment_path, "rb") as audio_file:
+                    request_kwargs: MutableMapping[str, Any] = {
+                        "model": deployment,
+                        "file": audio_file,
+                        "response_format": "diarized_json",
+                        "language": language,
+                        "chunking_strategy": "auto" 
+                    }
+                    if request_known_names:
+                        request_kwargs["known_speaker_names"] = request_known_names
 
-        try:
-            with open(segment_path, "rb") as audio_file:
-                request_kwargs: MutableMapping[str, Any] = {
-                    "model": deployment,
-                    "file": audio_file,
-                    "response_format": "diarized_json",
-                    "language": language,
-                    "chunking_strategy": "auto" 
-                }
-                if request_known_names:
-                    request_kwargs["known_speaker_names"] = request_known_names
-
-                def _handle_stream_chunk(payload: MutableMapping[str, Any]) -> None:
-                    nonlocal stream_tokens
-                    tokens = _extract_usage_tokens(payload)
-                    if tokens is None:
-                        return
-                    stream_tokens = max(stream_tokens, float(tokens))
-                    ratio = _compute_progress_ratio(
-                        processed_duration,
-                        total_audio_duration,
-                        produced_tokens + stream_tokens,
-                        total_estimated_tokens,
-                        segments_done,
-                        total_segments,
-                    )
-                    _update_progress_bar(
-                        ratio,
-                        _format_progress_detail(
+                    def _handle_stream_chunk(payload: MutableMapping[str, Any]) -> None:
+                        nonlocal stream_tokens
+                        tokens = _extract_usage_tokens(payload)
+                        if tokens is None:
+                            return
+                        stream_tokens = max(stream_tokens, float(tokens))
+                        ratio = _compute_progress_ratio(
                             processed_duration,
                             total_audio_duration,
                             produced_tokens + stream_tokens,
                             total_estimated_tokens,
                             segments_done,
                             total_segments,
-                        ),
+                        )
+                        _update_progress_bar(
+                            ratio,
+                            _format_progress_detail(
+                                processed_duration,
+                                total_audio_duration,
+                                produced_tokens + stream_tokens,
+                                total_estimated_tokens,
+                                segments_done,
+                                total_segments,
+                            ),
+                        )
+
+                    response = client.audio.transcriptions.create(
+                        **request_kwargs, stream=streaming
                     )
+            except Exception as exc:  # pragma: no cover - depends on API behaviour
+                if (
+                    bad_request_error is not None
+                    and isinstance(exc, bad_request_error)
+                ):
+                    message = _extract_openai_error_message(exc)
+                    raise RuntimeError(
+                        "Azure OpenAI 调用失败："
+                        f"{message}。请尝试使用 --clean-cache 重新生成音频，并确认 ffmpeg 可用。"
+                    ) from exc
+                if _is_stream_transport_error(exc):
+                    _write_diarization_cache(
+                        checkpoint_path,
+                        {
+                            "speakers": aggregated_diarization,
+                            "transcript": aggregated_transcript,
+                            "segment_offset": segment_offset,
+                            "processed_duration": processed_duration,
+                            "produced_tokens": produced_tokens,
+                            "segments_done": segments_done,
+                        },
+                    )
+                    if attempt < max_attempts:
+                        _LOGGER.warning(
+                            "Azure diarization transport error on segment %d (attempt %d/%d): %s",
+                            index,
+                            attempt,
+                            max_attempts,
+                            exc,
+                        )
+                        attempt += 1
+                        continue
+                raise
 
-                response = client.audio.transcriptions.create(
-                    **request_kwargs, stream=streaming
-                )
-        except Exception as exc:  # pragma: no cover - depends on API behaviour
-            if (
-                bad_request_error is not None
-                and isinstance(exc, bad_request_error)
-            ):
-                message = _extract_openai_error_message(exc)
-                raise RuntimeError(
-                    "Azure OpenAI 调用失败："
-                    f"{message}。请尝试使用 --clean-cache 重新生成音频，并确认 ffmpeg 可用。"
-                ) from exc
-            raise
-
-        response_payload = _consume_transcription_response(
-            response,
-            on_chunk=_handle_stream_chunk if streaming else None,
-        )
+            response_payload = _consume_transcription_response(
+                response,
+                on_chunk=_handle_stream_chunk if streaming else None,
+            )
+            break
         if not streaming:
             ratio = _compute_progress_ratio(
                 processed_duration,
@@ -1063,6 +2545,18 @@ def perform_azure_diarization(
 
         aggregated_diarization.extend(diarization_with_offset)
         aggregated_transcript.extend(transcript_with_offset)
+
+        _write_diarization_cache(
+            checkpoint_path,
+            {
+                "speakers": aggregated_diarization,
+                "transcript": aggregated_transcript,
+                "segment_offset": segment_offset,
+                "processed_duration": processed_duration,
+                "produced_tokens": produced_tokens,
+                "segments_done": segments_done,
+            },
+        )
 
         max_end = _max_segment_end(diarization_with_offset, transcript_with_offset)
         if segment_duration <= 0.0:
@@ -1170,8 +2664,17 @@ def perform_azure_diarization(
         "speakers": merged_entries,
         "transcript": transcript_segments,
     }
+    _LOGGER.info("[Diarization] Complete: %d speaker segments, %d transcript segments",
+                 len(merged_entries), len(transcript_segments))
+    _LOGGER.info("[Diarization] Writing cache to: %s", cache_path)
     _write_diarization_cache(cache_path, result_payload)
+    if os.path.exists(checkpoint_path):
+        try:
+            os.remove(checkpoint_path)
+        except OSError:
+            pass
 
+    _LOGGER.info("[Diarization] Successfully completed diarization")
     return result_payload
 
 
@@ -1809,8 +3312,20 @@ def generate_translation_summary(
     video_url: str,
     prompt: Optional[str] = None,
     metadata: Optional[Mapping[str, Any]] = None,
+    summary_length: Optional[str] = None,
 ) -> MutableMapping[str, Any]:
-    """Call Azure GPT-5 to translate and summarize ASR segments."""
+    """Call Azure GPT-5 to translate and summarize ASR segments.
+
+    Args:
+        segments: ASR transcript segments.
+        video_url: Original video/audio URL.
+        prompt: Custom system prompt (optional).
+        metadata: Video metadata (optional).
+        summary_length: Output length preset: brief/standard/detailed/full.
+
+    Returns:
+        Summary bundle with translated content.
+    """
 
     if not segments:
         raise RuntimeError("无法生成翻译摘要：缺少 ASR 结果。")
@@ -1824,42 +3339,37 @@ def generate_translation_summary(
 
     deployment = os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT") or "gpt-5-pro"
 
+    # Get length configuration
+    length_config = _get_summary_length_config(summary_length)
+    max_tokens = length_config["max_tokens"]
+    prompt_modifier = length_config["prompt_modifier"]
+
     instruction = prompt or _load_default_summary_prompt()
+    # Append length modifier to instruction
+    if prompt_modifier:
+        instruction = instruction + prompt_modifier
     timeline = _format_segments_for_summary(segments)
     user_message = "原始 ASR 片段如下：\n" + timeline
 
-    use_responses = deployment.endswith("-pro") or str(
-        os.getenv("AZURE_OPENAI_USE_RESPONSES", "")
-    ).lower() in {"1", "true", "yes"}
+    use_responses = False
+    if deployment:
+        use_responses = bool(
+            deployment.endswith("-pro")
+            or str(os.getenv("AZURE_OPENAI_USE_RESPONSES", "")).lower()
+            in {"1", "true", "yes"}
+        )
 
     if use_responses:
-        base_url = os.getenv("AZURE_OPENAI_RESPONSES_BASE_URL")
-        if not base_url:
-            base_url = _build_responses_base_url(azure_endpoint)
-
-        try:
-            from openai import OpenAI
-        except ModuleNotFoundError as exc:  # pragma: no cover - depends on env
-            raise RuntimeError(
-                "openai 库未安装。请执行 `pip install openai`."
-            ) from exc
-
-        client = OpenAI(base_url=base_url.rstrip("/"), api_key=azure_key)
-        response = client.responses.create(
-            model=deployment,
-            input=[
-                {
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": instruction}],
-                },
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": user_message}],
-                },
+        raw_summary = _call_responses_api(
+            endpoint=azure_endpoint,
+            api_key=azure_key,
+            deployment=deployment,
+            messages=[
+                {"role": "system", "content": instruction},
+                {"role": "user", "content": user_message},
             ],
-            max_output_tokens=16384,
+            max_output_tokens=max_tokens,
         )
-        raw_summary = _extract_responses_text(response)
     else:
         summary_api_version = (
             os.getenv("AZURE_OPENAI_SUMMARY_API_VERSION") or "2025-01-01-preview"
@@ -1876,6 +3386,7 @@ def generate_translation_summary(
             api_key=azure_key,
             api_version=summary_api_version,
             azure_endpoint=azure_endpoint,
+            http_client=_create_azure_http_client(),
         )
 
         response = client.chat.completions.create(
@@ -1884,7 +3395,7 @@ def generate_translation_summary(
                 {"role": "system", "content": instruction},
                 {"role": "user", "content": user_message},
             ],
-            max_completion_tokens=16384,
+            max_completion_tokens=max_tokens,
         )
         raw_summary = _extract_summary_text(response)
 
@@ -1960,34 +3471,26 @@ def _infer_domain_from_summary(raw_summary: str) -> Optional[str]:
         or os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT")
     )
 
-    use_responses = deployment.endswith("-pro") or str(
-        os.getenv("AZURE_OPENAI_USE_RESPONSES", "")
-    ).lower() in {"1", "true", "yes"}
+    use_responses = False
+    if deployment:
+        use_responses = deployment.endswith("-pro") or str(
+            os.getenv("AZURE_OPENAI_USE_RESPONSES", "")
+        ).lower() in {"1", "true", "yes"}
+    else:
+        return None
 
     try:
         if use_responses:
-            base_url = os.getenv("AZURE_OPENAI_RESPONSES_BASE_URL")
-            if not base_url:
-                base_url = _build_responses_base_url(azure_endpoint)
-
-            from openai import OpenAI
-
-            client = OpenAI(base_url=base_url.rstrip("/"), api_key=azure_key)
-            response = client.responses.create(
-                model=deployment,
-                input=[
-                    {
-                        "role": "system",
-                        "content": [{"type": "input_text", "text": DOMAIN_PROMPT}],
-                    },
-                    {
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": text}],
-                    },
+            content = _call_responses_api(
+                endpoint=azure_endpoint,
+                api_key=azure_key,
+                deployment=deployment,
+                messages=[
+                    {"role": "system", "content": DOMAIN_PROMPT},
+                    {"role": "user", "content": text},
                 ],
                 max_output_tokens=1024,
             )
-            content = _extract_responses_text(response)
         else:
             summary_api_version = (
                 os.getenv("AZURE_OPENAI_SUMMARY_API_VERSION") or "2025-01-01-preview"
@@ -1999,6 +3502,7 @@ def _infer_domain_from_summary(raw_summary: str) -> Optional[str]:
                 api_key=azure_key,
                 api_version=summary_api_version,
                 azure_endpoint=azure_endpoint,
+                http_client=_create_azure_http_client(),
             )
             response = client.chat.completions.create(
                 model=deployment,
@@ -2018,6 +3522,51 @@ def _infer_domain_from_summary(raw_summary: str) -> Optional[str]:
     return candidate
 
 
+def _normalize_domain_label(domain: str) -> str:
+    """Normalize domain tag to preferred English labels."""
+
+    text = str(domain or "").strip()
+    if not text:
+        return "General"
+
+    normalized = text.lower()
+    mapping = {
+        "科技": "Tech",
+        "技术": "Tech",
+        "science": "Science",
+        "科学": "Science",
+        "ai": "AI",
+        "人工智能": "AI",
+        "大模型": "LLM",
+        "llm": "LLM",
+        "智能体": "Agent",
+        "agent": "Agent",
+        "商业": "Business",
+        "商务": "Business",
+        "财经": "Finance",
+        "金融": "Finance",
+        "教育": "Education",
+        "学习": "Education",
+        "娱乐": "Entertainment",
+        "生活": "Lifestyle",
+        "体育": "Sports",
+        "医疗": "Medical",
+        "医学": "Medical",
+        "健康": "Health",
+        "法律": "Legal",
+        "产品": "Product",
+    }
+
+    if normalized in mapping:
+        return mapping[normalized]
+
+    # Preserve already English-looking labels.
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_\- ]*", text):
+        return text.strip()
+
+    return "General"
+
+
 def _compose_summary_documents(
     segments: Sequence[MutableMapping[str, Any]],
     raw_summary: str,
@@ -2027,12 +3576,15 @@ def _compose_summary_documents(
     if not raw_summary or not raw_summary.strip():
         raise RuntimeError("Azure GPT-5 摘要结果为空。")
 
+    source_type = str(video_metadata.get("source_type", "")).lower()
+    is_article = source_type == "article"
+
     sorted_segments = sorted(
         (dict(segment) for segment in segments),
         key=lambda item: float(item.get("start", 0.0)),
     )
 
-    generated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     if sorted_segments:
         starts = [float(item.get("start", 0.0)) for item in sorted_segments]
         ends = [float(item.get("end", item.get("start", 0.0))) for item in sorted_segments]
@@ -2051,6 +3603,8 @@ def _compose_summary_documents(
         }
     )
 
+    cache_dir = _resolve_video_cache_dir(video_url)
+
     title_raw = re.sub(r'[:\/\\`]', '', str(video_metadata.get("title") or ""))
     title = str(title_raw or "未知标题").strip() or "未知标题"
     publish_date_raw = str(video_metadata.get("upload_date") or "").strip()
@@ -2058,6 +3612,13 @@ def _compose_summary_documents(
 
     source_url = str(video_metadata.get("webpage_url") or video_url)
     domain = _extract_domain(video_metadata)
+    if domain == "通用":
+        inferred = _infer_domain_from_summary(raw_summary)
+        if inferred:
+            domain = inferred
+        elif "科技" in raw_summary:
+            domain = "Tech"
+    domain = _normalize_domain_label(domain)
     if domain == "通用":
         generated_domain = _infer_domain_from_summary(raw_summary)
         if generated_domain:
@@ -2077,6 +3638,7 @@ def _compose_summary_documents(
     summary_lines.append("## 封面")
     summary_lines.append(f"- 标题：{title}")
     summary_lines.append(f"- 链接：{source_url}")
+    summary_lines.append(f"- 缓存目录：{cache_dir}")
     summary_lines.append(f"- 发布日期：{publish_date}")
     summary_lines.append(f"- 总字数：{total_words}")
     summary_lines.append(f"- 预估阅读时长：约 {estimated_minutes} 分钟")
@@ -2084,7 +3646,25 @@ def _compose_summary_documents(
     summary_lines.append(f"- 覆盖时长：{formatted_duration}")
 
     summary_lines.append("")
-    summary_lines.append(raw_summary.strip())
+    if is_article:
+        summary_body = _append_article_assets(raw_summary.strip(), video_metadata)
+    else:
+        summary_body = raw_summary.strip()
+
+    summary_lines.append(summary_body)
+    summary_lines.append("")
+    if not is_article:
+        summary_lines.append("## 原文/双语对照")
+        for segment in sorted_segments:
+            text = str(segment.get("text", ""))
+            if not text.strip():
+                continue
+            start = _format_timestamp(segment.get("start", 0.0))
+            end = _format_timestamp(segment.get("end", segment.get("start", 0.0)))
+            speaker = str(segment.get("speaker", "")).strip() or "-"
+            summary_lines.append(
+                f"- {start}-{end} {speaker}: {text.strip()}"
+            )
     summary_lines.append("")
     summary_lines.extend(_build_exchange_footer())
 
@@ -2094,6 +3674,7 @@ def _compose_summary_documents(
     timeline_lines.append("## 封面")
     timeline_lines.append(f"- 标题：{title}")
     timeline_lines.append(f"- 链接：{source_url}")
+    timeline_lines.append(f"- 缓存目录：{cache_dir}")
     timeline_lines.append(f"- 发布日期：{publish_date}")
     timeline_lines.append(f"- 总字数：{total_words}")
     timeline_lines.append(f"- 预估阅读时长：约 {estimated_minutes} 分钟")
@@ -2104,8 +3685,8 @@ def _compose_summary_documents(
 
     timeline_lines.append("")
     timeline_lines.append("## 时间轴")
-    timeline_lines.append("| 序号 | 起始 | 结束 | 时长 | 说话人 | 文本 |")
-    timeline_lines.append("| --- | --- | --- | --- | --- | --- |")
+    timeline_lines.append("| 序号 | 起始 | 结束 | 时长 | 说话人 | 文本 | 原文 |")
+    timeline_lines.append("| --- | --- | --- | --- | --- | --- | --- |")
 
     for index, segment in enumerate(sorted_segments, start=1):
         start_seconds = float(segment.get("start", 0.0))
@@ -2113,15 +3694,17 @@ def _compose_summary_documents(
         duration_seconds = max(0.0, end_seconds - start_seconds)
         speaker = str(segment.get("speaker", "")).strip() or "-"
         text = str(segment.get("text", ""))
-        cell_text = _sanitize_markdown_cell(text)
+        cell_summary = _sanitize_markdown_cell(raw_summary)
+        cell_original = _sanitize_markdown_cell(text)
         timeline_lines.append(
-            "| {idx} | {start} | {end} | {duration} | {speaker} | {text} |".format(
+            "| {idx} | {start} | {end} | {duration} | {speaker} | {text} | {original} |".format(
                 idx=index,
                 start=_format_timestamp(start_seconds),
                 end=_format_timestamp(end_seconds),
                 duration=_format_timestamp(duration_seconds),
                 speaker=_sanitize_markdown_cell(speaker),
-                text=cell_text,
+                text=cell_summary if not is_article else cell_original,
+                original=cell_original,
             )
         )
 
@@ -2175,9 +3758,12 @@ def _build_exchange_footer() -> List[str]:
 
 def _build_responses_base_url(endpoint: str) -> str:
     normalized = endpoint.rstrip("/")
-    if normalized.endswith("/openai/v1"):
+    if normalized.endswith("/openai"):
         return normalized
-    return f"{normalized}/openai/v1"
+    # Strip legacy /v1 suffix if present
+    if normalized.endswith("/openai/v1"):
+        normalized = normalized[: -len("/v1")]
+    return f"{normalized}/openai"
 
 
 def _extract_responses_text(response: object) -> str:
@@ -2258,38 +3844,73 @@ def _write_summary_documents(
     summary_markdown: str,
     timeline_markdown: str,
     file_base: str,
+    write_timeline: bool = True,
 ) -> Mapping[str, str]:
     if not summary_markdown or not summary_markdown.strip():
         raise RuntimeError("无法写入空的摘要 Markdown 内容。")
-    if not timeline_markdown or not timeline_markdown.strip():
-        raise RuntimeError("无法写入空的时间轴 Markdown 内容。")
 
     directory = _resolve_video_cache_dir(video_url)
     summary_filename = f"{file_base}_summary.md"
-    timeline_filename = f"{file_base}_timeline.md"
     summary_path = _ensure_unique_markdown_path(directory, summary_filename)
-    timeline_path = _ensure_unique_markdown_path(directory, timeline_filename)
+
+    timeline_path: Optional[str] = None
+    if write_timeline:
+        if not timeline_markdown or not timeline_markdown.strip():
+            raise RuntimeError("无法写入空的时间轴 Markdown 内容。")
+        timeline_filename = f"{file_base}_timeline.md"
+        timeline_path = _ensure_unique_markdown_path(directory, timeline_filename)
 
     try:
         with open(summary_path, "w", encoding="utf-8") as summary_file:
             summary_file.write(summary_markdown)
-        with open(timeline_path, "w", encoding="utf-8") as timeline_file:
-            timeline_file.write(timeline_markdown)
+        if write_timeline and timeline_path is not None:
+            with open(timeline_path, "w", encoding="utf-8") as timeline_file:
+                timeline_file.write(timeline_markdown)
     except OSError as exc:  # pragma: no cover - filesystem failure
         raise RuntimeError(
             f"写入摘要/时间轴 Markdown 文件失败：{summary_path}, {timeline_path}"
         ) from exc
 
-    result: Dict[str, str] = {
-        "summary": summary_path,
-        "timeline": timeline_path,
-    }
+    result: Dict[str, str] = {"summary": summary_path}
+    if timeline_path is not None:
+        result["timeline"] = timeline_path
 
     outbox_summary = _copy_file_to_outbox(summary_path)
     if outbox_summary is not None:
         result["outbox_summary"] = outbox_summary
 
     return result
+
+
+def _append_article_assets(
+    summary_markdown: str, article_metadata: Optional[Mapping[str, Any]]
+) -> str:
+    """Append article asset links (images/tables) to summary markdown."""
+
+    if not article_metadata:
+        return summary_markdown
+
+    image_urls = article_metadata.get("image_urls") if isinstance(article_metadata, Mapping) else None
+    table_urls = article_metadata.get("table_urls") if isinstance(article_metadata, Mapping) else None
+
+    images: List[str] = []
+    tables: List[str] = []
+
+    if isinstance(image_urls, list):
+        images = [str(item) for item in image_urls if str(item).strip()]
+    if isinstance(table_urls, list):
+        tables = [str(item) for item in table_urls if str(item).strip()]
+
+    if not images and not tables:
+        return summary_markdown
+
+    lines = [summary_markdown.rstrip(), "", "## 附件链接"]
+    if images:
+        lines.append("- 图片：" + ", ".join(images))
+    if tables:
+        lines.append("- 表格：" + ", ".join(tables))
+
+    return "\n".join(lines) + "\n"
 
 
 def _ensure_unique_markdown_path(directory: str, filename: str) -> str:
@@ -2567,6 +4188,8 @@ class _ArticleHTMLParser(HTMLParser):
         self.description: Optional[str] = None
         self.icon_href: Optional[str] = None
         self._ignored_depth = 0
+        self.image_sources: List[str] = []
+        self.table_ids: List[str] = []
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         tag_lower = tag.lower()
@@ -2610,6 +4233,19 @@ class _ArticleHTMLParser(HTMLParser):
                 self.icon_href = href
             return
 
+        if tag_lower == "img":
+            attr_dict = {key.lower(): value for key, value in attrs if value is not None}
+            src = attr_dict.get("src")
+            if src:
+                self.image_sources.append(src)
+            return
+
+        if tag_lower == "table":
+            attr_dict = {key.lower(): value for key, value in attrs if value is not None}
+            table_id = attr_dict.get("id")
+            self.table_ids.append(table_id or "")
+            return
+
     def handle_startendtag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         self.handle_starttag(tag, attrs)
 
@@ -2648,7 +4284,7 @@ class _ArticleHTMLParser(HTMLParser):
             self.current_paragraph_parts.append(data)
 
 
-def _parse_article_html(html_text: str) -> Mapping[str, Any]:
+def _parse_article_html(html_text: str, page_url: Optional[str] = None) -> Mapping[str, Any]:
     parser = _ArticleHTMLParser()
     parser.feed(html_text)
     parser.close()
@@ -2663,11 +4299,26 @@ def _parse_article_html(html_text: str) -> Mapping[str, Any]:
         if normalized:
             paragraphs.append(normalized)
 
+    image_urls: List[str] = []
+    for src in parser.image_sources:
+        resolved = urljoin(page_url, src) if page_url else src
+        if resolved and resolved not in image_urls:
+            image_urls.append(resolved)
+
+    table_urls: List[str] = []
+    for table_id in parser.table_ids:
+        anchor = f"#{table_id}" if table_id else ""
+        resolved = urljoin(page_url, anchor) if page_url else anchor or None
+        if resolved and resolved not in table_urls:
+            table_urls.append(resolved)
+
     return {
         "title": title,
         "description": _normalize_article_text(parser.description or ""),
         "icon_href": parser.icon_href,
         "paragraphs": paragraphs,
+        "image_urls": image_urls,
+        "table_urls": table_urls,
     }
 
 
@@ -2745,7 +4396,7 @@ def fetch_article_assets(video_url: str) -> MutableMapping[str, Any]:
 
         if not html_text or not html_text.strip():
             raise RuntimeError("网页内容为空，无法解析正文。")
-        parsed = _parse_article_html(html_text)
+        parsed = _parse_article_html(html_text, video_url)
         icon_path = _download_article_icon(
             client, parsed.get("icon_href"), video_url, cache_dir
         )
@@ -2774,6 +4425,8 @@ def fetch_article_assets(video_url: str) -> MutableMapping[str, Any]:
         "description": parsed.get("description", ""),
         "webpage_url": video_url,
         "source_type": "article",
+        "image_urls": parsed.get("image_urls", []),
+        "table_urls": parsed.get("table_urls", []),
     }
 
     metadata_path = os.path.join(cache_dir, "article_metadata.json")
@@ -2787,6 +4440,8 @@ def fetch_article_assets(video_url: str) -> MutableMapping[str, Any]:
         "content_path": content_path,
         "metadata_path": metadata_path,
         "icon_path": icon_path,
+        "image_urls": parsed.get("image_urls", []),
+        "table_urls": parsed.get("table_urls", []),
         "cache_dir": cache_dir,
     }
 
@@ -2880,7 +4535,8 @@ def _ensure_audio_segments(wav_path: str) -> List[str]:
     if not needs_split:
         return [wav_path]
 
-    return _split_wav_file(wav_path, directory, base_name)
+    # Use smart splitting if numpy is available, otherwise fallback to regular split
+    return _split_wav_file_smart(wav_path, directory, base_name)
 
 
 def _list_existing_segments(directory: str, base_name: str) -> List[str]:
@@ -2902,10 +4558,264 @@ def _list_existing_segments(directory: str, base_name: str) -> List[str]:
     return segments
 
 
-def _split_wav_file(
+def _find_silence_boundary(
+    wav_path: str, target_seconds: float, window_seconds: float = 30.0
+) -> float:
+    """Find silence boundary near target time point for smart audio splitting.
+
+    Searches for the longest silence interval within a window around the target
+    time point. This helps avoid cutting in the middle of sentences or words.
+
+    Args:
+        wav_path: Path to WAV file
+        target_seconds: Target split time in seconds
+        window_seconds: Search window size (±window/2 around target)
+
+    Returns:
+        Optimal split time in seconds (silence midpoint, or target if no silence found)
+    """
+    if not _NUMPY_AVAILABLE or np is None:
+        # Fallback to target if numpy not available
+        return target_seconds
+
+    try:
+        with wave.open(wav_path, "rb") as wf:
+            frame_rate = wf.getframerate()
+            if frame_rate <= 0:
+                return target_seconds
+
+            total_frames = wf.getnframes()
+            total_duration = total_frames / frame_rate
+
+            # Clamp target to valid range
+            target_seconds = max(0.0, min(target_seconds, total_duration))
+
+            # Calculate window boundaries
+            window_start = max(0.0, target_seconds - window_seconds / 2)
+            window_end = min(total_duration, target_seconds + window_seconds / 2)
+
+            # Read audio data in window
+            start_frame = int(window_start * frame_rate)
+            end_frame = int(window_end * frame_rate)
+            frames_to_read = end_frame - start_frame
+
+            if frames_to_read <= 0:
+                return target_seconds
+
+            wf.setpos(start_frame)
+            frame_data = wf.readframes(frames_to_read)
+
+            # Convert to numpy array
+            sample_width = wf.getsampwidth()
+            if sample_width == 1:
+                dtype = np.uint8
+            elif sample_width == 2:
+                dtype = np.int16
+            else:
+                # Unsupported sample width
+                return target_seconds
+
+            audio_array = np.frombuffer(frame_data, dtype=dtype)
+
+            # Calculate RMS energy in 100ms chunks
+            chunk_size = max(1, frame_rate // 10)  # 100ms chunks
+            num_chunks = len(audio_array) // chunk_size
+
+            if num_chunks == 0:
+                return target_seconds
+
+            energies = []
+            for i in range(num_chunks):
+                chunk_start = i * chunk_size
+                chunk_end = min(chunk_start + chunk_size, len(audio_array))
+                chunk = audio_array[chunk_start:chunk_end].astype(np.float32)
+                rms = float(np.sqrt(np.mean(chunk**2)))
+                energies.append(rms)
+
+            if not energies:
+                return target_seconds
+
+            # Find silence threshold (10th percentile of energy)
+            silence_threshold = float(np.percentile(energies, 10))
+
+            # Find longest silence interval
+            longest_silence_start = 0
+            longest_silence_duration = 0
+            current_silence_start = None
+
+            for i, energy in enumerate(energies):
+                if energy < silence_threshold:
+                    if current_silence_start is None:
+                        current_silence_start = i
+                else:
+                    if current_silence_start is not None:
+                        duration = i - current_silence_start
+                        if duration > longest_silence_duration:
+                            longest_silence_duration = duration
+                            longest_silence_start = current_silence_start
+                        current_silence_start = None
+
+            # Check if final silence extends to end
+            if current_silence_start is not None:
+                duration = num_chunks - current_silence_start
+                if duration > longest_silence_duration:
+                    longest_silence_duration = duration
+                    longest_silence_start = current_silence_start
+
+            # If no significant silence found, return target
+            if longest_silence_duration == 0:
+                return target_seconds
+
+            # Calculate silence midpoint time
+            silence_midpoint_chunk = longest_silence_start + longest_silence_duration / 2
+            silence_time = window_start + (silence_midpoint_chunk * chunk_size) / frame_rate
+
+            # Clamp to valid range
+            return max(0.0, min(silence_time, total_duration))
+
+    except Exception:
+        # Any error, fallback to target
+        return target_seconds
+
+
+def _split_wav_file_smart(
     wav_path: str, directory: str, base_name: str
 ) -> List[str]:
-    """Split WAV file into multiple segments using wave module."""
+    """Split WAV file at silence boundaries for better audio quality.
+
+    Uses silence detection to find natural break points instead of cutting
+    at fixed time intervals. Falls back to regular splitting if numpy unavailable.
+
+    Args:
+        wav_path: Path to input WAV file
+        directory: Output directory for segments
+        base_name: Base name for output files
+
+    Returns:
+        List of paths to output segment files
+    """
+    # Fallback to regular split if numpy not available
+    if not _NUMPY_AVAILABLE or np is None:
+        return _split_wav_file(wav_path, directory, base_name)
+
+    segment_paths: List[str] = []
+
+    # Create output directory if needed
+    os.makedirs(directory, exist_ok=True)
+
+    try:
+        with wave.open(wav_path, "rb") as source:
+            params = source.getparams()
+            frame_rate = source.getframerate() or 16000
+            total_frames = source.getnframes()
+            total_duration = total_frames / frame_rate
+
+            # Check if splitting is actually needed
+            if total_duration <= AUDIO_SEGMENT_SECONDS:
+                # Audio is short enough, no splitting needed
+                return [wav_path]
+
+            # Calculate split points using silence detection
+            split_points = []
+            current_target = AUDIO_SEGMENT_SECONDS
+
+            while current_target < total_duration:
+                # Find optimal boundary near target
+                optimal_point = _find_silence_boundary(
+                    wav_path, current_target, window_seconds=30.0
+                )
+                split_points.append(optimal_point)
+
+                # Next target is optimal_point + segment_length
+                current_target = optimal_point + AUDIO_SEGMENT_SECONDS
+
+            # Create segments based on split points
+            segment_index = 0
+            current_start_frame = 0
+
+            for split_time in split_points:
+                segment_index += 1
+                split_frame = int(split_time * frame_rate)
+
+                # Create segment file
+                segment_path = os.path.join(
+                    directory, f"{base_name}_part{segment_index:03d}.wav"
+                )
+
+                with wave.open(segment_path, "wb") as destination:
+                    destination.setparams(params)
+
+                    # Read and write frames
+                    source.setpos(current_start_frame)
+                    frames_to_write = split_frame - current_start_frame
+
+                    frames_per_chunk = max(WAV_FRAME_CHUNK_SIZE, frame_rate)
+                    written = 0
+
+                    while written < frames_to_write:
+                        frames_to_read = min(frames_per_chunk, frames_to_write - written)
+                        frame_bytes = source.readframes(frames_to_read)
+                        if not frame_bytes:
+                            break
+                        destination.writeframes(frame_bytes)
+                        written += len(frame_bytes) // (params.sampwidth * params.nchannels)
+
+                if os.path.exists(segment_path) and os.path.getsize(segment_path) > 0:
+                    segment_paths.append(segment_path)
+
+                current_start_frame = split_frame
+
+            # Write final segment
+            segment_index += 1
+            segment_path = os.path.join(
+                directory, f"{base_name}_part{segment_index:03d}.wav"
+            )
+
+            with wave.open(segment_path, "wb") as destination:
+                destination.setparams(params)
+                source.setpos(current_start_frame)
+
+                frames_remaining = total_frames - current_start_frame
+                frames_per_chunk = max(WAV_FRAME_CHUNK_SIZE, frame_rate)
+
+                while frames_remaining > 0:
+                    frames_to_read = min(frames_per_chunk, frames_remaining)
+                    frame_bytes = source.readframes(frames_to_read)
+                    if not frame_bytes:
+                        break
+                    destination.writeframes(frame_bytes)
+                    frames_remaining -= len(frame_bytes) // (params.sampwidth * params.nchannels)
+
+            if os.path.exists(segment_path) and os.path.getsize(segment_path) > 0:
+                segment_paths.append(segment_path)
+
+            if not segment_paths:
+                return [wav_path]
+
+    except (OSError, wave.Error):
+        # Fallback to regular split on error
+        return _split_wav_file(wav_path, directory, base_name)
+
+    return segment_paths
+
+
+def _split_wav_file(
+    wav_path: str,
+    directory: str,
+    base_name: str,
+    show_progress: bool = True,
+) -> List[str]:
+    """Split WAV file into multiple segments using wave module.
+
+    Args:
+        wav_path: Path to the source WAV file.
+        directory: Directory to save split segments.
+        base_name: Base name for segment files.
+        show_progress: Whether to show progress bar.
+
+    Returns:
+        List of paths to segment files.
+    """
 
     segment_paths: List[str] = []
 
@@ -2920,7 +4830,14 @@ def _split_wav_file(
 
             total_frames = source.getnframes()
             frames_remaining = total_frames
+            frames_processed = 0
             segment_index = 0
+
+            # Calculate estimated total segments for progress
+            estimated_segments = max(1, (total_frames + frames_per_segment - 1) // frames_per_segment)
+
+            if show_progress and total_frames > 0:
+                _update_progress_bar(0.0, f"分割音频: 0/{estimated_segments}")
 
             while frames_remaining > 0:
                 segment_index += 1
@@ -2943,9 +4860,19 @@ def _split_wav_file(
                         written += frames_to_read
 
                     frames_remaining -= written
+                    frames_processed += written
 
                 if os.path.exists(segment_path) and os.path.getsize(segment_path) > 0:
                     segment_paths.append(segment_path)
+
+                # Update progress after each segment
+                if show_progress and total_frames > 0:
+                    ratio = min(frames_processed / total_frames, 1.0)
+                    _update_progress_bar(ratio, f"分割音频: {segment_index}/{estimated_segments}")
+
+            # Show completion
+            if show_progress and total_frames > 0:
+                _update_progress_bar(1.0, f"分割音频: {segment_index}/{segment_index}")
 
             if not segment_paths:
                 return [wav_path]
@@ -3014,10 +4941,118 @@ def _estimate_tokens_from_transcript(
     return max(total_chars / 4.0, float(segment_count))
 
 
+# Global rich progress instance for reuse
+_RICH_PROGRESS_INSTANCE: Optional[Any] = None
+_RICH_TASK_ID: Optional[Any] = None
+
+
+class _SimpleProgressContext:
+    """Simple progress context manager for fallback when rich is not available."""
+
+    def __init__(self, description: str, total: float = 100.0) -> None:
+        self.description = description
+        self.total = total
+        self.completed = 0.0
+
+    def __enter__(self) -> "_SimpleProgressContext":
+        return self
+
+    def __exit__(self, *args: Any) -> bool:
+        if self.completed < self.total:
+            _update_progress_bar(1.0, f"{self.description} 完成")
+        return False
+
+    def update(self, advance: float = 1.0, description: str = "") -> None:
+        self.completed += advance
+        ratio = self.completed / self.total if self.total > 0 else 0.0
+        detail = description or self.description
+        _update_progress_bar(ratio, detail)
+
+
+def _create_rich_progress() -> Any:
+    """Create a rich Progress instance with custom columns.
+
+    Returns:
+        Rich Progress instance or None if rich is not available.
+    """
+    if not _RICH_AVAILABLE or Progress is None:
+        return None
+
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(bar_width=30),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        console=Console(stderr=True),
+        transient=True,
+    )
+
+
+def _create_progress_context(
+    description: str,
+    total: float = 100.0,
+) -> Any:
+    """Create a progress context manager.
+
+    Uses rich Progress if available, otherwise falls back to simple text progress.
+
+    Args:
+        description: Description text for the progress bar.
+        total: Total amount of work to track.
+
+    Returns:
+        Context manager for progress tracking.
+    """
+    if _RICH_AVAILABLE and Progress is not None:
+        progress = _create_rich_progress()
+        if progress:
+            return progress
+    return _SimpleProgressContext(description, total)
+
+
 def _update_progress_bar(ratio: float, detail: str) -> None:
-    """Render a simple textual progress bar to stdout."""
+    """Render a progress bar to stdout.
+
+    Uses rich library if available for beautiful output, otherwise falls back
+    to simple text-based progress bar.
+
+    Args:
+        ratio: Progress ratio from 0.0 to 1.0.
+        detail: Detail text to display alongside the progress bar.
+    """
+    global _RICH_PROGRESS_INSTANCE, _RICH_TASK_ID
 
     ratio = min(max(ratio, 0.0), 1.0)
+
+    if _RICH_AVAILABLE and Progress is not None:
+        try:
+            if _RICH_PROGRESS_INSTANCE is None:
+                _RICH_PROGRESS_INSTANCE = _create_rich_progress()
+                if _RICH_PROGRESS_INSTANCE:
+                    _RICH_PROGRESS_INSTANCE.start()
+                    _RICH_TASK_ID = _RICH_PROGRESS_INSTANCE.add_task(
+                        detail[:60], total=100.0
+                    )
+
+            if _RICH_PROGRESS_INSTANCE and _RICH_TASK_ID is not None:
+                _RICH_PROGRESS_INSTANCE.update(
+                    _RICH_TASK_ID,
+                    completed=ratio * 100.0,
+                    description=detail[:60],
+                )
+
+                if ratio >= 1.0:
+                    _RICH_PROGRESS_INSTANCE.stop()
+                    _RICH_PROGRESS_INSTANCE = None
+                    _RICH_TASK_ID = None
+                return
+        except Exception:
+            # Fall back to simple progress on any error
+            pass
+
+    # Fallback: simple text progress bar
     filled = int(PROGRESS_BAR_WIDTH * ratio)
     bar = "#" * filled + "-" * (PROGRESS_BAR_WIDTH - filled)
     sys.stdout.write(
@@ -3108,6 +5143,31 @@ def _max_segment_end(
     return max_end
 
 
+def _is_stream_transport_error(exc: BaseException) -> bool:
+    if RemoteProtocolError is not None and isinstance(exc, RemoteProtocolError):
+        return True
+    if CoreRemoteProtocolError is not None and isinstance(exc, CoreRemoteProtocolError):
+        return True
+    if ConnectError is not None and isinstance(exc, ConnectError):
+        return True
+    if CoreConnectError is not None and isinstance(exc, CoreConnectError):
+        return True
+    if isinstance(exc, ConnectionError):
+        return True
+    try:
+        import httpx
+    except Exception:  # pragma: no cover - 可选依赖
+        httpx = None  # type: ignore[assignment]
+    if httpx is not None and isinstance(exc, httpx.TimeoutException):
+        return True
+    # OpenAI SDK wraps transport errors in APIConnectionError
+    try:
+        import openai
+    except Exception:  # pragma: no cover - 可选依赖
+        return False
+    return isinstance(exc, openai.APIConnectionError)
+
+
 def _consume_transcription_response(
     response: Any,
     on_chunk: Optional[Callable[[MutableMapping[str, Any]], None]] = None,
@@ -3133,14 +5193,31 @@ def _consume_transcription_response(
 
     if isinstance(response, Iterable) and not isinstance(response, (str, bytes)):
         final_payload: MutableMapping[str, Any] = {}
-        for item in response:
-            payload = _coerce_response_to_dict(item)
-            if not payload:
-                continue
-            final_payload = payload
-            _record(payload)
+        stream_error: Optional[BaseException] = None
+
+        try:
+            for item in response:
+                payload = _coerce_response_to_dict(item)
+                if not payload:
+                    continue
+                final_payload = payload
+                _record(payload)
+        except BaseException as exc:  # pragma: no cover - exercised via tests
+            if _is_stream_transport_error(exc):
+                stream_error = exc
+            else:
+                raise
+
+        if stream_error is not None:
+            _LOGGER.warning(
+                "Azure streaming response interrupted after %d chunks: %s",
+                len(collected),
+                stream_error,
+            )
 
         if not collected:
+            if stream_error is not None:
+                return final_payload
             return final_payload
 
         result = dict(final_payload) if final_payload else {}
@@ -3208,10 +5285,166 @@ def _is_media_source_url(video_url: str) -> bool:
     return False
 
 
-def _is_probable_article_url(video_url: str) -> bool:
-    """Heuristically determine whether a URL points to a webpage article."""
+def _smart_detect_content_type(url: str) -> str:
+    """Intelligently detect content type (video/audio/article) from URL.
 
-    return not _is_media_source_url(video_url)
+    Detection strategy (in order):
+    1. Check cache for previous results
+    2. Check URL file extension (.mp4, .mp3, etc.)
+    3. Check for embed/player/watch keywords in URL
+    4. Send HTTP HEAD request to check Content-Type header
+    5. Fetch first 1KB of HTML to check meta tags and video/audio elements
+    6. Fallback to existing white list logic (_is_media_source_url)
+
+    Args:
+        url: The URL to detect content type for
+
+    Returns:
+        "video", "audio", or "article"
+    """
+    # Step 1: Check cache
+    if url in _CONTENT_TYPE_CACHE:
+        return _CONTENT_TYPE_CACHE[url]
+
+    # Step 2: Check file extension
+    url_lower = url.lower()
+    if url_lower.endswith((".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv")):
+        _CONTENT_TYPE_CACHE[url] = "video"
+        return "video"
+
+    # Detect audio files separately
+    if url_lower.endswith((".mp3", ".m4a", ".wav", ".aac", ".flac", ".ogg")):
+        _CONTENT_TYPE_CACHE[url] = "audio"
+        return "audio"
+
+    # Step 3: Check for embed/player/watch keywords
+    parsed = urlparse(url)
+    path_lower = parsed.path.lower()
+    if any(keyword in path_lower for keyword in ["embed", "player", "watch"]):
+        _CONTENT_TYPE_CACHE[url] = "video"
+        return "video"
+
+    # Step 3.5: Check for known video/social media platforms
+    hostname = (parsed.hostname or "").lower()
+
+    # First, check for article paths that should NOT be treated as video
+    article_path_indicators = [
+        ("bilibili.com", ["/read/"]),  # Bilibili articles
+    ]
+
+    is_article_path = False
+    for platform_host, article_patterns in article_path_indicators:
+        if hostname.endswith(platform_host):
+            if any(pattern in path_lower for pattern in article_patterns):
+                # This is an article path, not video - skip video detection
+                is_article_path = True
+                break
+
+    # If not an article path, check for video platforms
+    if not is_article_path:
+        video_platform_indicators = [
+            # Short video platforms
+            ("tiktok.com", ["/video/", "/@"]),
+            ("douyin.com", ["/video/"]),
+            # Instagram
+            ("instagram.com", ["/reel/", "/tv/", "/p/"]),
+            # Xiaohongshu (Little Red Book)
+            ("xiaohongshu.com", ["/explore/", "/video/"]),
+            ("xhslink.com", ["/"]),
+            # Other platforms
+            ("vimeo.com", ["/"]),
+            ("dailymotion.com", ["/video/"]),
+            ("twitch.tv", ["/"]),
+            ("kick.com", ["/"]),
+        ]
+
+        for platform_host, path_patterns in video_platform_indicators:
+            if hostname.endswith(platform_host):
+                # Check if path matches any pattern, or if no patterns specified
+                if not path_patterns or any(pattern in path_lower for pattern in path_patterns):
+                    _CONTENT_TYPE_CACHE[url] = "video"
+                    return "video"
+
+    # Step 4-5: HTTP detection (only if httpx is available)
+    if _HTTPX_AVAILABLE and httpx is not None:
+        try:
+            # Send HEAD request with timeout
+            head_response = httpx.head(
+                url,
+                follow_redirects=True,
+                timeout=5.0,
+            )
+
+            # Check Content-Type header
+            content_type = head_response.headers.get("content-type", "").lower()
+
+            if "video/" in content_type:
+                _CONTENT_TYPE_CACHE[url] = "video"
+                return "video"
+
+            if "audio/" in content_type:
+                _CONTENT_TYPE_CACHE[url] = "audio"
+                return "audio"
+
+            # If HTML, fetch first 1KB to check meta tags
+            if "text/html" in content_type:
+                try:
+                    # Fetch first 1KB only
+                    partial_response = httpx.get(
+                        url,
+                        headers={"Range": "bytes=0-1023"},
+                        follow_redirects=True,
+                        timeout=5.0,
+                    )
+                    html_content = partial_response.text.lower()
+
+                    # Check OpenGraph meta tag
+                    if 'property="og:type"' in html_content and 'content="video' in html_content:
+                        _CONTENT_TYPE_CACHE[url] = "video"
+                        return "video"
+
+                    # Check Twitter Card meta tag
+                    if 'name="twitter:card"' in html_content and 'content="player"' in html_content:
+                        _CONTENT_TYPE_CACHE[url] = "video"
+                        return "video"
+
+                    # Check for <video> or <audio> tags
+                    if "<video" in html_content or "<audio" in html_content:
+                        _CONTENT_TYPE_CACHE[url] = "video"
+                        return "video"
+
+                except Exception:
+                    # Failed to fetch HTML, continue to fallback
+                    pass
+
+        except Exception:
+            # HTTP request failed, continue to fallback
+            pass
+
+    # Step 6: Fallback to existing white list logic
+    if _is_media_source_url(url):
+        _CONTENT_TYPE_CACHE[url] = "video"
+        return "video"
+
+    # Default to article
+    _CONTENT_TYPE_CACHE[url] = "article"
+    return "article"
+
+
+def _is_probable_article_url(video_url: str) -> bool:
+    """Heuristically determine whether a URL points to a webpage article.
+
+    Uses smart content type detection to identify video/audio vs article URLs.
+    Both video and audio content are considered non-article (media) sources.
+    """
+    # Disable smart detection if environment variable is set
+    if os.getenv("ANY2SUMMARY_DISABLE_SMART_DETECTION"):
+        return not _is_media_source_url(video_url)
+
+    content_type = _smart_detect_content_type(video_url)
+    # Only article content type is considered an article
+    # Video and audio both require media processing (diarization)
+    return content_type == "article"
 
 
 def _should_force_azure_transcription(video_url: str) -> bool:

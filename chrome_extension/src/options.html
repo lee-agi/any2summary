@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title data-i18n="optionsTitle">any2summary Settings</title>
+    <style>
+      :root {
+        --primary-color: #1a73e8;
+        --primary-hover: #1557b0;
+        --bg-color: #f8f9fa;
+        --card-bg: #ffffff;
+        --text-color: #202124;
+        --text-secondary: #5f6368;
+        --border-color: #dadce0;
+        --border-radius: 8px;
+        --shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+        --shadow-hover: 0 4px 6px rgba(0, 0, 0, 0.15);
+        --success-color: #34a853;
+        --error-color: #ea4335;
+        --warning-color: #fbbc04;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        background-color: var(--bg-color);
+        color: var(--text-color);
+        margin: 0;
+        padding: 24px;
+        line-height: 1.5;
+      }
+
+      .container {
+        max-width: 680px;
+        margin: 0 auto;
+      }
+
+      h1 {
+        font-size: 24px;
+        font-weight: 500;
+        margin-bottom: 24px;
+        color: var(--text-color);
+      }
+
+      /* Card 样式 */
+      .card {
+        background: var(--card-bg);
+        border-radius: var(--border-radius);
+        box-shadow: var(--shadow);
+        padding: 20px 24px;
+        margin-bottom: 16px;
+      }
+
+      .card-title {
+        font-size: 16px;
+        font-weight: 500;
+        color: var(--text-color);
+        margin: 0 0 16px 0;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      .card-description {
+        font-size: 13px;
+        color: var(--text-secondary);
+        margin-bottom: 16px;
+      }
+
+      /* 表单元素 */
+      .form-group {
+        margin-bottom: 16px;
+      }
+
+      .form-group:last-child {
+        margin-bottom: 0;
+      }
+
+      label {
+        display: block;
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-color);
+        margin-bottom: 6px;
+      }
+
+      input[type="text"],
+      input[type="password"],
+      input[type="number"] {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius);
+        font-size: 14px;
+        color: var(--text-color);
+        background: var(--card-bg);
+        transition: border-color 0.2s, box-shadow 0.2s;
+      }
+
+      input[type="text"]:focus,
+      input[type="password"]:focus,
+      input[type="number"]:focus {
+        outline: none;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+      }
+
+      input::placeholder {
+        color: var(--text-secondary);
+      }
+
+      /* 行布局 */
+      .row {
+        display: flex;
+        gap: 16px;
+      }
+
+      .row > .form-group {
+        flex: 1;
+      }
+
+      /* Toggle 开关样式 */
+      .toggle-group {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      .toggle-group:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+
+      .toggle-group:first-child {
+        padding-top: 0;
+      }
+
+      .toggle-label {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .toggle-title {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-color);
+      }
+
+      .toggle-description {
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+
+      /* Toggle switch */
+      .toggle-switch {
+        position: relative;
+        width: 48px;
+        height: 24px;
+        flex-shrink: 0;
+      }
+
+      .toggle-switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+
+      .toggle-slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: #ccc;
+        transition: 0.3s;
+        border-radius: 24px;
+      }
+
+      .toggle-slider:before {
+        position: absolute;
+        content: "";
+        height: 18px;
+        width: 18px;
+        left: 3px;
+        bottom: 3px;
+        background-color: white;
+        transition: 0.3s;
+        border-radius: 50%;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      }
+
+      .toggle-switch input:checked + .toggle-slider {
+        background-color: var(--primary-color);
+      }
+
+      .toggle-switch input:checked + .toggle-slider:before {
+        transform: translateX(24px);
+      }
+
+      /* 按钮样式 */
+      .btn {
+        padding: 10px 24px;
+        border-radius: var(--border-radius);
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s;
+        border: none;
+      }
+
+      .btn-primary {
+        background-color: var(--primary-color);
+        color: white;
+      }
+
+      .btn-primary:hover {
+        background-color: var(--primary-hover);
+        box-shadow: var(--shadow-hover);
+      }
+
+      .btn-secondary {
+        background-color: var(--card-bg);
+        color: var(--primary-color);
+        border: 1px solid var(--border-color);
+      }
+
+      .btn-secondary:hover {
+        background-color: var(--bg-color);
+      }
+
+      .btn-small {
+        padding: 6px 12px;
+        font-size: 12px;
+      }
+
+      /* 状态提示 */
+      .status-container {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 1000;
+      }
+
+      .toast {
+        background: var(--text-color);
+        color: white;
+        padding: 12px 24px;
+        border-radius: var(--border-radius);
+        box-shadow: var(--shadow-hover);
+        font-size: 14px;
+        opacity: 0;
+        transform: translateY(20px);
+        transition: all 0.3s;
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .toast.success {
+        background: var(--success-color);
+      }
+
+      .toast.error {
+        background: var(--error-color);
+      }
+
+      /* 服务器状态 */
+      .server-status {
+        font-size: 13px;
+        padding: 8px 12px;
+        border-radius: var(--border-radius);
+        background: var(--bg-color);
+        margin-top: 12px;
+      }
+
+      .server-status.success {
+        background: rgba(52, 168, 83, 0.1);
+        color: var(--success-color);
+      }
+
+      .server-status.error {
+        background: rgba(234, 67, 53, 0.1);
+        color: var(--error-color);
+      }
+
+      /* 保存按钮区域 */
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+        margin-top: 24px;
+      }
+
+      /* 响应式 */
+      @media (max-width: 480px) {
+        body {
+          padding: 16px;
+        }
+
+        .row {
+          flex-direction: column;
+          gap: 0;
+        }
+      }
+
+      /* 折叠式配置区块 */
+      .collapsible-section {
+        margin-top: 24px;
+      }
+
+      .collapsible-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 16px;
+        background: var(--card-bg);
+        border-radius: var(--border-radius);
+        box-shadow: var(--shadow);
+        cursor: pointer;
+        user-select: none;
+        transition: background 0.2s;
+      }
+
+      .collapsible-header:hover {
+        background: var(--bg-color);
+      }
+
+      .collapsible-header h2 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 500;
+        color: var(--text-color);
+      }
+
+      .collapsible-icon {
+        font-size: 12px;
+        color: var(--text-secondary);
+        transition: transform 0.3s;
+      }
+
+      .collapsible-section.expanded .collapsible-icon {
+        transform: rotate(180deg);
+      }
+
+      .collapsible-content {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.3s ease-out;
+      }
+
+      .collapsible-section.expanded .collapsible-content {
+        max-height: 2000px;
+      }
+
+      .collapsible-content .card {
+        margin-top: 12px;
+        margin-bottom: 0;
+      }
+
+      .collapsible-content .card:first-child {
+        border-top-left-radius: 0;
+        border-top-right-radius: 0;
+      }
+
+      /* 连接状态指示器 */
+      .status-indicator {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-left: 8px;
+        vertical-align: middle;
+      }
+
+      .status-indicator.online {
+        background-color: var(--success-color);
+        box-shadow: 0 0 4px var(--success-color);
+      }
+
+      .status-indicator.offline {
+        background-color: var(--error-color);
+        box-shadow: 0 0 4px var(--error-color);
+      }
+
+      .status-indicator.checking {
+        background-color: var(--warning-color);
+        box-shadow: 0 0 4px var(--warning-color);
+        animation: pulse 1s infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+
+      /* 缓存管理 */
+      .cache-management {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px;
+        background: var(--bg-color);
+        border-radius: var(--border-radius);
+        margin-top: 16px;
+      }
+
+      .cache-info {
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
+
+      .cache-info strong {
+        color: var(--text-color);
+      }
+
+      .btn-danger {
+        background-color: var(--error-color);
+        color: white;
+      }
+
+      .btn-danger:hover {
+        background-color: #c5221f;
+        box-shadow: var(--shadow-hover);
+      }
+
+      /* Select 样式 */
+      select {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius);
+        font-size: 14px;
+        background: var(--card-bg);
+        color: var(--text-color);
+        cursor: pointer;
+      }
+
+      select:focus {
+        outline: none;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1 data-i18n="optionsTitle">any2summary Settings</h1>
+
+      <!-- API 配置 -->
+      <div class="card">
+        <h2 class="card-title" data-i18n="apiConfigTitle">API Configuration</h2>
+        <div class="form-group">
+          <label for="endpoint" data-i18n="endpointLabel">Azure/OpenAI Endpoint</label>
+          <input id="endpoint" type="text" data-i18n-placeholder="endpointPlaceholder" placeholder="https://region-001.openai.azure.com" />
+        </div>
+        <div class="row">
+          <div class="form-group">
+            <label for="apiVersion" data-i18n="apiVersionLabel">API Version</label>
+            <input id="apiVersion" type="text" data-i18n-placeholder="apiVersionPlaceholder" placeholder="2025-04-01-preview" />
+          </div>
+          <div class="form-group">
+            <label for="deployment" data-i18n="deploymentLabel">Deployment / Model</label>
+            <input id="deployment" type="text" data-i18n-placeholder="deploymentPlaceholder" placeholder="gpt-5.1-codex" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="apiKey" data-i18n="apiKeyLabel">API Key</label>
+          <input id="apiKey" type="password" data-i18n-placeholder="apiKeyPlaceholder" placeholder="sk-..." />
+        </div>
+        <div class="toggle-group">
+          <div class="toggle-label">
+            <span class="toggle-title" data-i18n="useResponsesApiTitle">Use Responses API</span>
+            <span class="toggle-description" data-i18n="useResponsesApiDesc">Enable new Responses API format</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="useResponses" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- 本地服务配置 -->
+      <div class="card">
+        <h2 class="card-title">
+          <span data-i18n="localServerTitle">Local Server Configuration</span>
+          <span id="serverIndicator" class="status-indicator offline" title=""></span>
+        </h2>
+        <p class="card-description" data-i18n="localServerDesc">
+          When enabled, video/audio will be transcribed via the local server. Run `any2summary serve` first.
+        </p>
+        <p class="card-description" style="margin-top: 8px; padding: 10px; background: rgba(26, 115, 232, 0.1); border-radius: 6px;" data-i18n="localServerProxyDesc">
+          YouTube Proxy Support: If YouTube is inaccessible in your region, enable local server to fetch transcripts via system proxy. Ensure HTTP_PROXY / HTTPS_PROXY environment variables are set.
+        </p>
+        <div class="toggle-group">
+          <div class="toggle-label">
+            <span class="toggle-title" data-i18n="localServerEnabledTitle">Enable Local Server</span>
+            <span class="toggle-description" data-i18n="localServerEnabledDesc">Use local server for audio transcription</span>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="localServerEnabled" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="form-group" style="margin-top: 16px;">
+          <label for="localServerUrl" data-i18n="localServerUrlLabel">Local Server URL</label>
+          <input id="localServerUrl" type="text" data-i18n-placeholder="localServerUrlPlaceholder" placeholder="http://127.0.0.1:8765" />
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; margin-top: 12px;">
+          <button id="testServer" type="button" class="btn btn-secondary btn-small" data-i18n="testConnectionButton">Test Connection</button>
+          <div id="serverStatus" class="server-status" style="display: none;"></div>
+        </div>
+      </div>
+
+      <!-- 高级配置（折叠式） -->
+      <div class="collapsible-section" id="advancedSection">
+        <div class="collapsible-header" id="advancedToggle">
+          <h2 data-i18n="advancedConfigTitle">Advanced Configuration</h2>
+          <span class="collapsible-icon">▼</span>
+        </div>
+        <div class="collapsible-content">
+          <!-- 摘要配置 -->
+          <div class="card">
+            <h2 class="card-title" data-i18n="summaryConfigTitle">Summary Configuration</h2>
+            <p class="card-description" data-i18n="summaryConfigDesc">
+              Control summary length and detail level.
+            </p>
+            <div class="form-group">
+              <label for="summaryLength" data-i18n="summaryLengthLabel">Summary Length</label>
+              <select id="summaryLength">
+                <option value="brief" data-i18n="summaryLengthBrief">Brief (3-5 sentences)</option>
+                <option value="standard" selected data-i18n="summaryLengthStandard">Standard</option>
+                <option value="detailed" data-i18n="summaryLengthDetailed">Detailed</option>
+                <option value="full" data-i18n="summaryLengthFull">Full Translation</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- 语言偏好配置 -->
+          <div class="card">
+            <h2 class="card-title" data-i18n="languageConfigTitle">Language Preferences</h2>
+            <p class="card-description" data-i18n="languageConfigDesc">
+              Set preferred language order for subtitles/content.
+            </p>
+            <div class="form-group">
+              <label for="preferredLanguage" data-i18n="preferredLanguageLabel">Preferred Language</label>
+              <select id="preferredLanguage">
+                <option value="en">English</option>
+                <option value="zh-Hans">简体中文</option>
+                <option value="zh-Hant">繁體中文</option>
+                <option value="ja">日本語</option>
+                <option value="ko">한국어</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-top: 16px;">
+              <label for="fallbackLanguages" data-i18n="fallbackLanguagesLabel">Fallback Languages (comma-separated)</label>
+              <input id="fallbackLanguages" type="text" placeholder="zh-Hans,zh-Hant,ja,ko" />
+            </div>
+          </div>
+
+          <!-- 缓存设置 -->
+          <div class="card">
+            <h2 class="card-title" data-i18n="cacheTitle">Cache Settings</h2>
+            <div class="toggle-group">
+              <div class="toggle-label">
+                <span class="toggle-title" data-i18n="cacheEnabledTitle">Enable Cache</span>
+                <span class="toggle-description" data-i18n="cacheEnabledDesc">Cache summaries to avoid repeated requests</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="cacheEnabled" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="row" style="margin-top: 16px;">
+              <div class="form-group">
+                <label for="cacheTtl" data-i18n="cacheTtlLabel">Cache TTL (minutes)</label>
+                <input id="cacheTtl" type="number" min="1" placeholder="60" />
+              </div>
+              <div class="form-group">
+                <label for="cacheMax" data-i18n="cacheMaxLabel">Max Cache Entries</label>
+                <input id="cacheMax" type="number" min="1" placeholder="50" />
+              </div>
+            </div>
+            <!-- 缓存管理 UI -->
+            <div class="cache-management">
+              <div class="cache-info">
+                <span data-i18n="cacheSizeLabel">Cache Size:</span>
+                <strong id="cacheSize">-- KB</strong>
+                <span style="margin-left: 12px;" data-i18n="cacheEntriesLabel">Entries:</span>
+                <strong id="cacheEntries">--</strong>
+              </div>
+              <button id="clearCache" type="button" class="btn btn-danger btn-small" data-i18n="clearCacheButton">Clear Cache</button>
+            </div>
+          </div>
+
+          <!-- 自动保存配置 -->
+          <div class="card">
+            <h2 class="card-title" data-i18n="autoSaveTitle">Auto Save Configuration</h2>
+            <p class="card-description" data-i18n="autoSaveDesc">
+              Automatically save summaries as Markdown files to Chrome downloads folder.
+            </p>
+            <div class="toggle-group">
+              <div class="toggle-label">
+                <span class="toggle-title" data-i18n="autoSaveEnabledTitle">Auto Save Summaries</span>
+                <span class="toggle-description" data-i18n="autoSaveEnabledDesc">Save summaries to local files automatically</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="autoSaveSummary" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-group">
+              <div class="toggle-label">
+                <span class="toggle-title" data-i18n="saveTimelineTitle">Save Timeline File</span>
+                <span class="toggle-description" data-i18n="saveTimelineDesc">Save original subtitle timeline for video/audio</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="saveTimeline" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-group">
+              <div class="toggle-label">
+                <span class="toggle-title" data-i18n="inferDomainTitle">Auto-infer Domain Tag</span>
+                <span class="toggle-description" data-i18n="inferDomainDesc">Infer Domain tag from summary (requires extra API call)</span>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="inferDomain" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="form-group" style="margin-top: 16px;">
+              <label for="saveSubdirectory" data-i18n="saveSubdirectoryLabel">Save Subdirectory</label>
+              <input id="saveSubdirectory" type="text" placeholder="any2summary" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 保存按钮 -->
+      <div class="actions">
+        <button id="save" class="btn btn-primary" data-i18n="saveButton">Save Settings</button>
+      </div>
+    </div>
+
+    <!-- Toast 提示 -->
+    <div class="status-container">
+      <div id="toast" class="toast"></div>
+    </div>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

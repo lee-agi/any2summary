@@ -87,6 +87,15 @@ def _article_html_fixture() -> str:
         "      <h1>Effective Context Engineering for AI Agents</h1>\n"
         "      <p>First paragraph introducing the key concepts.</p>\n"
         "      <p>Second paragraph with more details.</p>\n"
+        "      <img src=\"/static/hero.png\" alt=\"Hero image\">\n"
+        "      <figure>\n"
+        "        <img src=\"https://cdn.example.com/assets/chart.jpg\" alt=\"Chart\">\n"
+        "      </figure>\n"
+        "      <table id=\"summary\">\n"
+        "        <caption>Summary Table</caption>\n"
+        "        <tr><th>Item</th><th>Value</th></tr>\n"
+        "        <tr><td>A</td><td>1</td></tr>\n"
+        "      </table>\n"
         "    </main>\n"
         "  </body>\n"
         "</html>\n"
@@ -137,6 +146,14 @@ def test_fetch_article_assets_writes_cache(
     assert "First paragraph" in content_text
     assert "Second paragraph" in content_text
 
+    assert bundle["image_urls"] == [
+        "https://www.example.com/static/hero.png",
+        "https://cdn.example.com/assets/chart.jpg",
+    ]
+    assert bundle["table_urls"] == ["https://www.example.com/posts/demo#summary"]
+    assert bundle["metadata"]["image_urls"] == bundle["image_urls"]
+    assert bundle["metadata"]["table_urls"] == bundle["table_urls"]
+
     segments = bundle["segments"]
     assert len(segments) == 2
     assert segments[0]["text"].startswith("First paragraph")
@@ -174,6 +191,8 @@ def test_cli_processes_article_summary(
         "content_path": str(tmp_path / "article.txt"),
         "metadata_path": str(tmp_path / "article.json"),
         "icon_path": str(tmp_path / "icon.png"),
+        "image_urls": ["https://www.example.com/static/hero.png"],
+        "table_urls": ["https://www.example.com/posts/demo#summary"],
     }
 
     (tmp_path / "article.html").write_text("raw", encoding="utf-8")
@@ -184,6 +203,8 @@ def test_cli_processes_article_summary(
     monkeypatch.setattr(
         cli, "fetch_article_assets", lambda url: bundle if url == target_url else None
     )
+    monkeypatch.setattr(cli, "perform_azure_diarization", lambda *_, **__: AssertionError("should not call azure"))
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", lambda *_, **__: [])
 
     summary_payload = {
         "summary_markdown": "# Summary\n",
@@ -199,6 +220,7 @@ def test_cli_processes_article_summary(
         video_url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         assert video_url == target_url
         assert segments == bundle["segments"]
@@ -220,6 +242,188 @@ def test_cli_processes_article_summary(
     assert payload["summary_path"].endswith("demo_summary.md")
     assert os.path.exists(payload["summary_path"])
 
+
+def test_cli_article_skips_timeline_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """文章/博客模式下不应生成 timeline Markdown 文件。"""
+
+    target_url = "https://www.example.com/posts/no-timeline"
+
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
+
+    def fake_fetch_transcript(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("no transcript")
+
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
+
+    bundle = {
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "Paragraph one."},
+            {"start": 1.0, "end": 2.0, "text": "Paragraph two."},
+        ],
+        "metadata": {
+            "title": "Article",
+            "webpage_url": target_url,
+            "source_type": "article",
+        },
+        "raw_html_path": str(tmp_path / "article.html"),
+        "content_path": str(tmp_path / "article.txt"),
+        "metadata_path": str(tmp_path / "article.json"),
+        "icon_path": str(tmp_path / "icon.png"),
+    }
+
+    (tmp_path / "article.html").write_text("raw", encoding="utf-8")
+    (tmp_path / "article.txt").write_text("text", encoding="utf-8")
+    (tmp_path / "article.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "icon.png").write_bytes(b"icon")
+
+    monkeypatch.setattr(
+        cli, "fetch_article_assets", lambda url: bundle if url == target_url else None
+    )
+
+    summary_payload = {
+        "summary_markdown": "# Summary\n",
+        "timeline_markdown": "## Timeline\n",
+        "metadata": {"title": "Article"},
+        "file_base": "article",
+    }
+
+    monkeypatch.setattr(
+        cli, "generate_translation_summary", lambda *_args, **_kwargs: summary_payload
+    )
+
+    exit_code = cli.run(["--url", target_url, "--azure-summary"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["summary_path"].endswith("article_summary.md")
+    assert "timeline_path" not in payload
+    assert not list(tmp_path.rglob("*_timeline.md"))
+
+
+def test_cli_article_summary_includes_assets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """文章模式生成的 summary 应包含图片与表格链接。"""
+
+    target_url = "https://www.example.com/posts/assets"
+
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
+
+    def fake_fetch_transcript(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("no transcript")
+
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
+
+    image_url = "https://www.example.com/static/hero.png"
+    table_url = "https://www.example.com/posts/assets#tbl"
+
+    bundle = {
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "Paragraph one."},
+        ],
+        "metadata": {
+            "title": "Article with assets",
+            "webpage_url": target_url,
+            "source_type": "article",
+            "image_urls": [image_url],
+            "table_urls": [table_url],
+        },
+        "raw_html_path": str(tmp_path / "article.html"),
+        "content_path": str(tmp_path / "article.txt"),
+        "metadata_path": str(tmp_path / "article.json"),
+        "icon_path": str(tmp_path / "icon.png"),
+        "image_urls": [image_url],
+        "table_urls": [table_url],
+    }
+
+    (tmp_path / "article.html").write_text("raw", encoding="utf-8")
+    (tmp_path / "article.txt").write_text("text", encoding="utf-8")
+    (tmp_path / "article.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "icon.png").write_bytes(b"icon")
+
+    monkeypatch.setattr(
+        cli, "fetch_article_assets", lambda url: bundle if url == target_url else None
+    )
+
+    summary_payload = {
+        "summary_markdown": "# Summary\n内容",
+        "timeline_markdown": "## Timeline\n",
+        "metadata": {"title": "Article with assets"},
+        "file_base": "article",
+    }
+
+    monkeypatch.setattr(
+        cli, "generate_translation_summary", lambda *_args, **_kwargs: summary_payload
+    )
+
+    exit_code = cli.run(["--url", target_url, "--azure-summary"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    summary_path = Path(payload["summary_path"])
+    content = summary_path.read_text(encoding="utf-8")
+
+    assert image_url in content
+    assert table_url in content
+
+
+def test_cli_article_on_media_host_skips_timeline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """媒体域名下的文章路径也应视为文章，不生成 timeline。"""
+
+    target_url = "https://www.bilibili.com/read/cv123456"
+
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
+
+    def fake_fetch_transcript(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("no transcript")
+
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
+
+    bundle = {
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "Paragraph."},
+        ],
+        "metadata": {
+            "title": "Bili Article",
+            "webpage_url": target_url,
+            "source_type": "article",
+        },
+        "raw_html_path": str(tmp_path / "article.html"),
+        "content_path": str(tmp_path / "article.txt"),
+        "metadata_path": str(tmp_path / "article.json"),
+        "icon_path": str(tmp_path / "icon.png"),
+    }
+
+    for name in ("article.html", "article.txt", "article.json", "icon.png"):
+        path = tmp_path / name
+        path.write_text("placeholder", encoding="utf-8") if path.suffix != ".png" else path.write_bytes(b"icon")
+
+    monkeypatch.setattr(
+        cli, "fetch_article_assets", lambda url: bundle if url == target_url else None
+    )
+
+    summary_payload = {
+        "summary_markdown": "# Summary\n内容",
+        "timeline_markdown": "## Timeline\n",
+        "metadata": {"title": "Bili Article"},
+        "file_base": "article",
+    }
+
+    monkeypatch.setattr(
+        cli, "generate_translation_summary", lambda *_args, **_kwargs: summary_payload
+    )
+
+    exit_code = cli.run(["--url", target_url, "--azure-summary"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "timeline_path" not in payload
 
 def test_cli_article_custom_prompt_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -277,6 +481,7 @@ def test_cli_article_custom_prompt_file(
         video_url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         assert prompt == custom_prompt_text
         return summary_payload
@@ -351,6 +556,7 @@ def test_cli_article_ignores_summary_prompt_file_for_articles(
         video_url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         assert prompt == cli._load_default_article_prompt()
         assert video_url == target_url
@@ -428,6 +634,7 @@ def test_cli_article_uses_default_article_prompt_file(
         video_url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         captured_prompt["prompt"] = prompt
         return summary_payload
@@ -504,6 +711,7 @@ def test_cli_article_disables_azure_diarization_when_article_detected(
         video_url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         assert prompt == cli._load_default_article_prompt()
         assert metadata == bundle["metadata"]
@@ -568,6 +776,7 @@ def test_cli_podcast_url_prefers_media_prompt(
         video_url: str,
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
+        summary_length: str | None = None,
     ) -> Dict[str, Any]:
         assert prompt != cli._load_default_article_prompt()
         assert video_url == target_url
@@ -613,6 +822,10 @@ def test_cli_handles_multiple_urls(
         return [dict(segment) for segment in transcripts[video_url]]
 
     monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
+    # Disable smart detection to use legacy white list behavior for these generic URLs
+    monkeypatch.setenv("ANY2SUMMARY_DISABLE_SMART_DETECTION", "1")
+    # Clear content type cache to ensure fresh detection
+    cli._CONTENT_TYPE_CACHE.clear()
     monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
     def fake_article_assets(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("no article")
@@ -656,6 +869,10 @@ def test_cli_multiple_urls_continues_on_error(
         raise RuntimeError("transcript unavailable")
 
     monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
+    # Disable smart detection to use legacy white list behavior for these generic URLs
+    monkeypatch.setenv("ANY2SUMMARY_DISABLE_SMART_DETECTION", "1")
+    # Clear content type cache to ensure fresh detection
+    cli._CONTENT_TYPE_CACHE.clear()
     monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
     def fake_article_assets_fail(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("no article")

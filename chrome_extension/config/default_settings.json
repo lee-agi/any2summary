@@ -1,0 +1,18 @@
+{
+  "azure_endpoint": "https://region-001.openai.azure.com",
+  "azure_api_version": "2025-04-01-preview",
+  "deployment": "llab-gpt-5",
+  "use_responses_api": true,
+  "cache_enabled": true,
+  "cache_ttl_minutes": 60,
+  "cache_max_entries": 50,
+  "api_key": "",
+  "preferred_languages": ["en", "zh-Hans", "zh-Hant", "ja", "ko"],
+  "auto_detect_content_type": true,
+  "use_http_detection": true,
+  "max_output_tokens": 16384,
+  "local_server_url": "http://127.0.0.1:8765",
+  "local_server_enabled": false,
+  "auto_save_summary": true,
+  "save_subdirectory": "any2summary"
+}
