@@ -1,5 +1,6 @@
 """Tests for error code module."""
 
+import subprocess
 import pytest
 from any2summary.errors import (
     ErrorCode,
@@ -140,3 +141,33 @@ class TestCreatePackageError:
         """Test auto_fix function is callable."""
         error = create_package_error("some_package")
         assert callable(error.auto_fix)
+
+    def test_auto_fix_runs_expected_pip_command(self, monkeypatch):
+        """Test auto_fix executes pip install command for chosen package."""
+        executed = {}
+
+        def fake_run(cmd, **kwargs):
+            executed["cmd"] = cmd
+            executed["kwargs"] = kwargs
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        error = create_package_error("youtube_transcript_api", "youtube-transcript-api")
+
+        assert error.auto_fix is not None
+        assert error.auto_fix() is True
+        assert executed["cmd"][-1] == "youtube-transcript-api"
+        assert executed["kwargs"]["check"] is True
+        assert executed["kwargs"]["capture_output"] is True
+        assert executed["kwargs"]["timeout"] == 120
+
+    def test_auto_fix_returns_false_on_subprocess_error(self, monkeypatch):
+        """Test auto_fix handles installer command failures gracefully."""
+
+        def fake_run(*args, **kwargs):
+            raise subprocess.CalledProcessError(1, ["pip", "install", "missing-pkg"])
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        error = create_package_error("missing_pkg", "missing-pkg")
+
+        assert error.auto_fix is not None
+        assert error.auto_fix() is False

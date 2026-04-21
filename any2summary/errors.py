@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
 from typing import Callable, Optional
-import os
 import subprocess
 import sys
 
@@ -84,7 +83,25 @@ AZURE_OPENAI_API_KEY=your-api-key-here
 # AZURE_OPENAI_SUMMARY_DEPLOYMENT=gpt-4o
 """
     try:
-        env_path.write_text(template)
+        env_path.write_text(template, encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def _run_command(command: list[str], timeout: int) -> bool:
+    """Run a command and return whether it succeeded.
+
+    This centralizes subprocess invocation so auto-fix handlers share
+    consistent behaviour and are easier to maintain/test.
+    """
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            timeout=timeout,
+        )
         return True
     except Exception:
         return False
@@ -93,60 +110,22 @@ AZURE_OPENAI_API_KEY=your-api-key-here
 def _fix_ffmpeg() -> bool:
     """Attempt to install ffmpeg via common package managers."""
     if sys.platform == "darwin":
-        # macOS: try Homebrew
-        try:
-            subprocess.run(
-                ["brew", "install", "ffmpeg"],
-                check=True,
-                capture_output=True,
-                timeout=300,
-            )
-            return True
-        except Exception:
-            return False
-    elif sys.platform == "linux":
-        # Linux: try apt-get
-        try:
-            subprocess.run(
-                ["sudo", "apt-get", "install", "-y", "ffmpeg"],
-                check=True,
-                capture_output=True,
-                timeout=300,
-            )
-            return True
-        except Exception:
-            return False
+        return _run_command(["brew", "install", "ffmpeg"], timeout=300)
+    if sys.platform == "linux":
+        return _run_command(["sudo", "apt-get", "install", "-y", "ffmpeg"], timeout=300)
     return False
 
 
 def _fix_ytdlp() -> bool:
     """Install yt-dlp via pip."""
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "yt-dlp"],
-            check=True,
-            capture_output=True,
-            timeout=120,
-        )
-        return True
-    except Exception:
-        return False
+    return _run_command([sys.executable, "-m", "pip", "install", "yt-dlp"], timeout=120)
 
 
 def _make_package_fixer(package_name: str) -> Callable[[], bool]:
     """Create a fixer function for a specific pip package."""
 
     def fixer() -> bool:
-        try:
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", package_name],
-                check=True,
-                capture_output=True,
-                timeout=120,
-            )
-            return True
-        except Exception:
-            return False
+        return _run_command([sys.executable, "-m", "pip", "install", package_name], timeout=120)
 
     return fixer
 
@@ -263,16 +242,15 @@ def map_http_status_to_error(status_code: int) -> ErrorCode:
     Returns:
         Corresponding ErrorCode for the HTTP status.
     """
-    if status_code in (401, 403):
+    if status_code in {401, 403}:
         return ErrorCode.AZURE_KEY_INVALID
-    elif status_code == 400:
+    if status_code == 400:
         return ErrorCode.AZURE_BAD_REQUEST
-    elif status_code == 429:
+    if status_code == 429:
         return ErrorCode.AZURE_RATE_LIMITED
-    elif status_code >= 500:
+    if status_code >= 500:
         return ErrorCode.AZURE_SERVER_ERROR
-    else:
-        return ErrorCode.AZURE_UNREACHABLE
+    return ErrorCode.AZURE_UNREACHABLE
 
 
 def create_package_error(package_name: str, pip_name: str | None = None) -> ErrorInfo:
