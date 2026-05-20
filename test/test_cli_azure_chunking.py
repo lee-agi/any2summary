@@ -51,9 +51,8 @@ def test_perform_azure_diarization_uses_auto_chunking(
 
     def fake_create(**kwargs: Any) -> Dict[str, Any]:
         captured.update(kwargs)
-        strategy = kwargs.get("chunking_strategy")
-        if not isinstance(strategy, dict) or strategy.get("type") != "auto":
-            raise RuntimeError("chunking_strategy must be dict with type auto")
+        if kwargs.get("chunking_strategy") != "auto":
+            raise RuntimeError("chunking_strategy must be auto")
         if kwargs.get("known_speaker_names") != ["Alice"]:
             raise RuntimeError("known_speaker_names must match provided speakers")
         if kwargs.get("stream") is not True:
@@ -97,14 +96,15 @@ def test_perform_azure_diarization_uses_auto_chunking(
         "https://youtu.be/exampleid", "en", known_speakers=known_speakers
     )
 
-    assert captured["chunking_strategy"] == {"type": "auto"}
-    assert captured["extra_body"]["chunking_strategy"] == {"type": "auto"}
+    assert captured["chunking_strategy"] == "auto"
     assert result["speakers"][0]["speaker"] == "Speaker 1"
 
 
-def test_perform_azure_diarization_passes_known_speaker_names(
+def test_perform_azure_diarization_ignores_name_only_speaker_hints(
     monkeypatch: pytest.MonkeyPatch, dummy_audio: Path, tmp_path: Path
 ) -> None:
+    """Azure rejects name-only hints; send names only with references."""
+
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
     monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2025-03-01-preview")
@@ -116,8 +116,8 @@ def test_perform_azure_diarization_passes_known_speaker_names(
 
     def fake_create(**kwargs: Any) -> Dict[str, Any]:
         captured.update(kwargs)
-        if kwargs.get("known_speaker_names") != ["Alice", "Bob"]:
-            raise RuntimeError("known_speaker_names 未正确传递")
+        if "known_speaker_names" in kwargs:
+            raise RuntimeError("name-only known_speaker_names should not be sent")
         segment = {"start": "0.0", "end": "1.0", "speaker": "Speaker 1"}
         return {
             "segments": [segment],
@@ -155,6 +155,7 @@ def test_perform_azure_diarization_passes_known_speaker_names(
         known_speaker_names=["Alice", "Bob"],
     )
 
+    assert "known_speaker_names" not in captured
     assert result["speakers"][0]["speaker"] == "Speaker 1"
 
 

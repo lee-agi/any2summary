@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import List
+from typing import Any, List
 
 import pytest
 
@@ -478,3 +478,104 @@ def test_cli_can_disable_azure_streaming(monkeypatch, tmp_path):
 def test_should_try_android_fallback_with_cookies():
     exc = RuntimeError("HTTP Error 403: Forbidden")
     assert cli._should_try_android_fallback(exc, cookiefile="/tmp/cookies.txt")
+
+
+def test_direct_audio_url_skips_youtube_transcript(monkeypatch, capsys):
+    """Direct .m4a URLs must go straight to Azure, not youtube-transcript-api."""
+
+    target_url = "https://media.xyzcdn.net/626b46ea9cbbf0451cf5a962/ll7qIcIWWGFSsORHr4yY-UuqAe8h.m4a"
+
+    def fail_fetch_transcript(*_args, **_kwargs):  # pragma: no cover - defensive
+        raise AssertionError("direct audio must not import/fetch YouTube transcripts")
+
+    def fake_perform_diarization(video_url: str, *_args, **_kwargs):
+        assert video_url == target_url
+        return {
+            "speakers": [{"start": 0.0, "end": 2.0, "speaker": "Speaker A"}],
+            "transcript": [{"start": 0.0, "end": 2.0, "text": "完整音频转写片段"}],
+        }
+
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fail_fetch_transcript)
+    monkeypatch.setattr(cli, "perform_azure_diarization", fake_perform_diarization)
+
+    exit_code = cli.run(["--url", target_url, "--language", "zh"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["text"] == "完整音频转写片段"
+
+
+def test_xiaoyuzhou_page_resolves_og_audio_before_summary(monkeypatch, capsys):
+    """小宇宙页面必须先解析 og:audio，并基于音频 URL 转写。"""
+
+    page_url = "https://www.xiaoyuzhoufm.com/episode/6a00aa051b7bd50295dfe41d"
+    audio_url = "https://media.xyzcdn.net/626b46ea9cbbf0451cf5a962/ll7qIcIWWGFSsORHr4yY-UuqAe8h.m4a"
+
+    class _Response:
+        text = (
+            "<html><head>"
+            f"<meta property='og:audio' content='{audio_url}'>"
+            "</head><body><p>show notes should not be used as summary basis</p></body></html>"
+        )
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: Any) -> bool:
+            return False
+
+        def get(self, url: str, **_kwargs: Any) -> _Response:
+            assert url == page_url
+            return _Response()
+
+    def fail_fetch_article_assets(*_args, **_kwargs):  # pragma: no cover - defensive
+        raise AssertionError("podcast pages must not fall back to article/show notes")
+
+    def fake_perform_diarization(video_url: str, *_args, **_kwargs):
+        assert video_url == audio_url
+        return {
+            "speakers": [{"start": 0.0, "end": 2.0, "speaker": "姚顺宇"}],
+            "transcript": [{"start": 0.0, "end": 2.0, "text": "基于音频的转写"}],
+        }
+
+    monkeypatch.setattr(cli, "_create_http_client", lambda: _Client())
+    monkeypatch.setattr(cli, "fetch_article_assets", fail_fetch_article_assets)
+    monkeypatch.setattr(cli, "perform_azure_diarization", fake_perform_diarization)
+
+    exit_code = cli.run(["--url", page_url, "--language", "zh"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["text"] == "基于音频的转写"
+
+
+def test_podcast_page_without_audio_fails_fast(monkeypatch):
+    """未解析到音频时，禁止输出基于 metadata/show notes 的完整总结。"""
+
+    page_url = "https://www.xiaoyuzhoufm.com/episode/no-audio"
+
+    class _Response:
+        text = "<html><body><p>only show notes</p></body></html>"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: Any) -> bool:
+            return False
+
+        def get(self, url: str, **_kwargs: Any) -> _Response:
+            assert url == page_url
+            return _Response()
+
+    monkeypatch.setattr(cli, "_create_http_client", lambda: _Client())
+
+    with pytest.raises(RuntimeError, match="禁止基于页面元数据"):
+        cli._resolve_podcast_audio_url(page_url)

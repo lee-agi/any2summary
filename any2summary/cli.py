@@ -26,6 +26,7 @@ import sys
 import tempfile
 import wave
 from datetime import datetime, timezone
+from html import unescape
 from html.parser import HTMLParser
 from collections import defaultdict
 from importlib import metadata
@@ -820,11 +821,25 @@ _MEDIA_HOST_SUFFIXES = (
     "open.spotify.com",
     "podcasters.spotify.com",
 )
-_FORCED_AUDIO_HOST_SUFFIXES = (
+_PODCAST_PAGE_HOST_SUFFIXES = (
+    "xiaoyuzhoufm.com",
     "podcasts.apple.com",
     "podcast.apple.com",
 )
+_FORCED_AUDIO_HOST_SUFFIXES = (
+    "podcasts.apple.com",
+    "podcast.apple.com",
+    "media.xyzcdn.net",
+    "xyzcdn.net",
+    "xyzfm.space",
+)
 _MEDIA_PATH_EXTENSIONS = (".mp3", ".m4a", ".aac", ".wav", ".flac")
+_AUDIO_META_KEYS = {
+    "og:audio",
+    "og:audio:url",
+    "og:audio:secure_url",
+    "twitter:player:stream",
+}
 
 # Cache for smart content type detection (URL -> content_type)
 _CONTENT_TYPE_CACHE: Dict[str, str] = {}
@@ -1833,6 +1848,19 @@ def _run_single_with_retry(args: argparse.Namespace) -> int:
 
 
 def _run_single(args: argparse.Namespace) -> int:
+    original_url = args.url
+    resolved_audio_url = _resolve_podcast_audio_url(original_url)
+    resolved_audio_metadata: Optional[Mapping[str, Any]] = None
+    if resolved_audio_url != original_url:
+        args = copy.copy(args)
+        args.url = resolved_audio_url
+        resolved_audio_metadata = {
+            "title": Path(urlparse(resolved_audio_url).path).stem or "podcast audio",
+            "webpage_url": original_url,
+            "source_type": "podcast_audio",
+            "audio_url": resolved_audio_url,
+        }
+
     auto_force_azure = _should_force_azure_transcription(args.url)
 
     force_azure = bool(args.force_azure_diarization or auto_force_azure)
@@ -1856,6 +1884,7 @@ def _run_single(args: argparse.Namespace) -> int:
     known_speaker_pairs = _parse_known_speakers(args.known_speakers)
     known_speaker_names = args.known_speaker_names or None
     is_probable_article = _is_probable_article_url(args.url)
+    is_direct_non_youtube_media = _is_direct_non_youtube_media_url(args.url)
 
     transcript_segments: Optional[
         List[MutableMapping[str, float | str]]
@@ -1875,6 +1904,11 @@ def _run_single(args: argparse.Namespace) -> int:
                 article_bundle = None
         if transcript_segments is None:
             transcript_segments = []
+    elif is_direct_non_youtube_media:
+        # Direct audio/video URLs and non-YouTube podcast/media pages do not have
+        # YouTube captions.  Skip youtube-transcript-api entirely so media
+        # processing cannot be blocked by unrelated XML/YouTube dependencies.
+        transcript_segments = []
     else:
         try:
             transcript_segments = fetch_transcript_with_metadata(
@@ -1970,7 +2004,7 @@ def _run_single(args: argparse.Namespace) -> int:
 
     summary_bundle: Optional[MutableMapping[str, Any]] = None
     summary_paths: Optional[Mapping[str, str]] = None
-    article_metadata = article_bundle.get("metadata") if article_bundle else None
+    article_metadata = article_bundle.get("metadata") if article_bundle else resolved_audio_metadata
     is_article = bool(article_metadata and str(article_metadata.get("source_type")) == "article")
     if args.azure_summary:
         custom_prompt: Optional[str] = None
@@ -2026,6 +2060,10 @@ def _run_single(args: argparse.Namespace) -> int:
             payload["estimated_minutes"] = summary_bundle["estimated_minutes"]
     else:
         payload = merged_segments
+
+    if isinstance(payload, MutableMapping) and original_url != args.url:
+        payload["source_url"] = original_url
+        payload["audio_url"] = args.url
 
     if isinstance(payload, MutableMapping) and article_bundle is not None:
         payload["article_metadata"] = article_bundle.get("metadata")
@@ -2230,6 +2268,7 @@ def perform_azure_diarization(
     azure_api_version = "2025-03-01-preview"
     deployment = (
         os.getenv("AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT")
+        or os.getenv("AZURE_OPENAI_TRANSCRIPTION_DEPLOYMENT")
         or "gpt-4o-transcribe-diarize"
     )
     if not azure_key or not azure_endpoint:
@@ -2314,7 +2353,11 @@ def perform_azure_diarization(
     extra_names = extra_body.get("known_speaker_names")
     if isinstance(extra_names, list):
         request_known_names.extend(str(name) for name in extra_names)
-    if known_speaker_names:
+    # Azure currently requires known_speaker_names and
+    # known_speaker_references to have the same item count.  Do not send
+    # name-only hints as API parameters; keep the CLI option harmless when no
+    # reference audio was provided.
+    if known_speaker_names and extra_body.get("known_speaker_references"):
         for name in known_speaker_names:
             if not isinstance(name, str):
                 continue
@@ -2400,7 +2443,10 @@ def perform_azure_diarization(
                         "file": audio_file,
                         "response_format": "diarized_json",
                         "language": language,
-                        "chunking_strategy": "auto" 
+                        # Azure transcription models accept the public
+                        # chunking_strategy value as the string "auto" here;
+                        # sending the dict form is silently dropped/rejected.
+                        "chunking_strategy": "auto",
                     }
                     if request_known_names:
                         request_kwargs["known_speaker_names"] = request_known_names
@@ -2574,6 +2620,18 @@ def perform_azure_diarization(
             segment_tokens = max(segment_tokens, stream_tokens)
         produced_tokens += segment_tokens
         segments_done += 1
+
+        _write_diarization_cache(
+            checkpoint_path,
+            {
+                "speakers": aggregated_diarization,
+                "transcript": aggregated_transcript,
+                "segment_offset": segment_offset,
+                "processed_duration": processed_duration,
+                "produced_tokens": produced_tokens,
+                "segments_done": segments_done,
+            },
+        )
 
         ratio = _compute_progress_ratio(
             processed_duration,
@@ -4190,6 +4248,8 @@ class _ArticleHTMLParser(HTMLParser):
         self._ignored_depth = 0
         self.image_sources: List[str] = []
         self.table_ids: List[str] = []
+        self.audio_sources: List[str] = []
+        self.feed_links: List[str] = []
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         tag_lower = tag.lower()
@@ -4223,14 +4283,21 @@ class _ArticleHTMLParser(HTMLParser):
             prop = (attr_dict.get("property") or "").lower()
             if name == "description" or prop in {"og:description", "twitter:description"}:
                 self.description = content
+            if name in _AUDIO_META_KEYS or prop in _AUDIO_META_KEYS:
+                self.audio_sources.append(content)
             return
 
         if tag_lower == "link":
             attr_dict = {key.lower(): value for key, value in attrs if value is not None}
             rel_value = (attr_dict.get("rel") or "").lower()
             href = attr_dict.get("href")
+            type_value = (attr_dict.get("type") or "").lower()
             if href and "icon" in rel_value:
                 self.icon_href = href
+            if href and "alternate" in rel_value and (
+                "rss" in type_value or "atom" in type_value or "xml" in type_value
+            ):
+                self.feed_links.append(href)
             return
 
         if tag_lower == "img":
@@ -4238,6 +4305,13 @@ class _ArticleHTMLParser(HTMLParser):
             src = attr_dict.get("src")
             if src:
                 self.image_sources.append(src)
+            return
+
+        if tag_lower in {"audio", "source"}:
+            attr_dict = {key.lower(): value for key, value in attrs if value is not None}
+            src = attr_dict.get("src")
+            if src:
+                self.audio_sources.append(src)
             return
 
         if tag_lower == "table":
@@ -4312,6 +4386,18 @@ def _parse_article_html(html_text: str, page_url: Optional[str] = None) -> Mappi
         if resolved and resolved not in table_urls:
             table_urls.append(resolved)
 
+    audio_urls: List[str] = []
+    for src in parser.audio_sources:
+        resolved = urljoin(page_url, src) if page_url else src
+        if resolved and resolved not in audio_urls:
+            audio_urls.append(resolved)
+
+    feed_urls: List[str] = []
+    for href in parser.feed_links:
+        resolved = urljoin(page_url, href) if page_url else href
+        if resolved and resolved not in feed_urls:
+            feed_urls.append(resolved)
+
     return {
         "title": title,
         "description": _normalize_article_text(parser.description or ""),
@@ -4319,6 +4405,8 @@ def _parse_article_html(html_text: str, page_url: Optional[str] = None) -> Mappi
         "paragraphs": paragraphs,
         "image_urls": image_urls,
         "table_urls": table_urls,
+        "audio_urls": audio_urls,
+        "feed_urls": feed_urls,
     }
 
 
@@ -5052,16 +5140,17 @@ def _update_progress_bar(ratio: float, detail: str) -> None:
             # Fall back to simple progress on any error
             pass
 
-    # Fallback: simple text progress bar
+    # Fallback: simple text progress bar. Keep stdout reserved for machine-
+    # readable JSON payloads; progress belongs on stderr.
     filled = int(PROGRESS_BAR_WIDTH * ratio)
     bar = "#" * filled + "-" * (PROGRESS_BAR_WIDTH - filled)
-    sys.stdout.write(
+    sys.stderr.write(
         f"\r[{bar}] {ratio * 100:5.1f}% {detail[:80]}"
     )
-    sys.stdout.flush()
+    sys.stderr.flush()
     if ratio >= 1.0:
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+        sys.stderr.write("\n")
+        sys.stderr.flush()
 
 
 def _compute_progress_ratio(
@@ -5160,12 +5249,14 @@ def _is_stream_transport_error(exc: BaseException) -> bool:
         httpx = None  # type: ignore[assignment]
     if httpx is not None and isinstance(exc, httpx.TimeoutException):
         return True
-    # OpenAI SDK wraps transport errors in APIConnectionError
+    # OpenAI SDK wraps transport errors in APIConnectionError. Some tests inject
+    # a minimal fake openai module, so guard the attribute lookup.
     try:
         import openai
     except Exception:  # pragma: no cover - 可选依赖
         return False
-    return isinstance(exc, openai.APIConnectionError)
+    api_connection_error = getattr(openai, "APIConnectionError", None)
+    return bool(api_connection_error and isinstance(exc, api_connection_error))
 
 
 def _consume_transcription_response(
@@ -5283,6 +5374,120 @@ def _is_media_source_url(video_url: str) -> bool:
         if path.endswith(extension):
             return True
     return False
+
+
+def _is_direct_non_youtube_media_url(video_url: str) -> bool:
+    """Return True for media URLs that should skip YouTube caption lookup."""
+
+    parsed = urlparse(video_url)
+    hostname = (parsed.hostname or "").lower()
+    if _is_youtube_hostname(hostname):
+        return False
+    content_type = _smart_detect_content_type(video_url)
+    return content_type in {"audio", "video"} or _is_media_source_url(video_url)
+
+
+def _is_podcast_page_url(video_url: str) -> bool:
+    parsed = urlparse(video_url)
+    hostname = (parsed.hostname or "").lower()
+    return any(_matches_host_suffix(hostname, suffix) for suffix in _PODCAST_PAGE_HOST_SUFFIXES)
+
+
+def _candidate_is_audio_url(candidate: str) -> bool:
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    path = parsed.path.lower()
+    if any(path.endswith(extension) for extension in _MEDIA_PATH_EXTENSIONS):
+        return True
+    hostname = (parsed.hostname or "").lower()
+    return any(_matches_host_suffix(hostname, suffix) for suffix in _FORCED_AUDIO_HOST_SUFFIXES)
+
+
+def _extract_audio_url_from_feed(feed_text: str, page_url: str) -> Optional[str]:
+    """Extract an audio URL from RSS/Atom text without importing XML parsers."""
+
+    if not feed_text:
+        return None
+
+    patterns = [
+        r"<enclosure\b[^>]*\burl=['\"]([^'\"]+)['\"][^>]*>",
+        r"<media:content\b[^>]*\burl=['\"]([^'\"]+)['\"][^>]*>",
+        r"<link\b[^>]*\brel=['\"]enclosure['\"][^>]*\bhref=['\"]([^'\"]+)['\"][^>]*>",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, feed_text, flags=re.IGNORECASE):
+            candidate = urljoin(page_url, unescape(match.group(1)))
+            if _candidate_is_audio_url(candidate):
+                return candidate
+
+    for match in re.finditer(r"https?://[^\s<'\"]+", feed_text):
+        candidate = unescape(match.group(0))
+        if _candidate_is_audio_url(candidate):
+            return candidate
+    return None
+
+
+def _resolve_podcast_audio_url(video_url: str) -> str:
+    """Resolve supported podcast pages to their actual audio URL.
+
+    小宇宙 / Apple Podcast 页面必须基于真实音频下载或转写结果总结。
+    If no audio URL can be extracted, fail fast instead of falling back to
+    page metadata, show notes, or an official partial text transcript.
+    """
+
+    if not _is_podcast_page_url(video_url):
+        return video_url
+    if _candidate_is_audio_url(video_url):
+        return video_url
+    if not video_url.lower().startswith(("http://", "https://")):
+        return video_url
+
+    try:
+        with _create_http_client() as client:
+            response = client.get(
+                video_url,
+                headers={
+                    "User-Agent": DEFAULT_YTDLP_USER_AGENT,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+                },
+            )
+            response.raise_for_status()
+            html_text = response.text
+            parsed = _parse_article_html(html_text, video_url)
+            for candidate in parsed.get("audio_urls", []):
+                audio_url = str(candidate)
+                if _candidate_is_audio_url(audio_url):
+                    return audio_url
+
+            for feed_url in parsed.get("feed_urls", []):
+                try:
+                    feed_response = client.get(
+                        str(feed_url),
+                        headers={
+                            "User-Agent": DEFAULT_YTDLP_USER_AGENT,
+                            "Accept": "application/rss+xml,application/atom+xml,application/xml,text/xml,*/*;q=0.8",
+                            "Referer": video_url,
+                        },
+                    )
+                    feed_response.raise_for_status()
+                except Exception:
+                    continue
+                audio_url = _extract_audio_url_from_feed(feed_response.text, str(feed_url))
+                if audio_url:
+                    return audio_url
+    except Exception as exc:
+        raise RuntimeError(
+            "播客页面必须先解析实际音频 URL；当前未能完成音频提取，"
+            "因此不会基于页面元数据、show notes 或文字版生成完整总结。"
+            f" 原始错误：{exc}"
+        ) from exc
+
+    raise RuntimeError(
+        "播客页面未解析到可下载音频 URL；禁止基于页面元数据、show notes "
+        "或文字版生成完整总结。请提供 og:audio/RSS enclosure 中的音频 URL 后重试。"
+    )
 
 
 def _smart_detect_content_type(url: str) -> str:

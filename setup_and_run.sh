@@ -7,11 +7,22 @@ export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890 all_pr
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${SCRIPT_DIR}"
-VENV_DIR="${PROJECT_ROOT}/.venv"
 
+# Prefer the project-pinned Python 3.13 environment.  Python 3.14 on this Mac
+# has a pyexpat/libexpat ABI issue that breaks youtube-transcript-api/feedparser
+# imports, which in turn can block direct-audio podcast transcription.
+if [ -z "${VENV_DIR:-}" ]; then
+  if [ -d "${PROJECT_ROOT}/.venv-py313" ]; then
+    VENV_DIR="${PROJECT_ROOT}/.venv-py313"
+  else
+    VENV_DIR="${PROJECT_ROOT}/.venv"
+  fi
+fi
 
 if [ -z "${PYTHON_BIN:-}" ]; then
-  if [ -n "${MINIFORGE_HOME:-}" ] && [ -x "${MINIFORGE_HOME}/bin/python3" ]; then
+  if command -v python3.13 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3.13)"
+  elif [ -n "${MINIFORGE_HOME:-}" ] && [ -x "${MINIFORGE_HOME}/bin/python3" ]; then
     PYTHON_BIN="${MINIFORGE_HOME}/bin/python3"
   elif command -v python3 >/dev/null 2>&1; then
     PYTHON_BIN="$(command -v python3)"
@@ -32,6 +43,11 @@ if [ ! -d "${VENV_DIR}" ]; then
 fi
 
 source "${VENV_DIR}/bin/activate"
+
+if ! python -m pip --version >/dev/null 2>&1; then
+  echo "[setup] Bootstrapping pip inside ${VENV_DIR}" >&2
+  python -m ensurepip --upgrade
+fi
 
 echo "[setup] Upgrading pip inside ${VENV_DIR}" >&2
 python -m pip install --upgrade pip
