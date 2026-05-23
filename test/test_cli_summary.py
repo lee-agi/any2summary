@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import sys
 from pathlib import Path
@@ -15,17 +14,7 @@ import pytest
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE_ROOT))
 
-# Import first to ensure module exists
-import any2summary.cli as cli_module
-
 from any2summary import cli
-
-sys.modules.pop("any2summary", None)
-sys.modules.pop("any2summary.cli", None)
-
-from any2summary import cli
-
-cli = importlib.reload(cli)
 
 
 @pytest.fixture(autouse=True)

@@ -15,12 +15,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-sys.modules.pop("any2summary", None)
-sys.modules.pop("any2summary.cli", None)
-
 from any2summary import cli
-
-cli = importlib.reload(cli)
 
 
 @pytest.fixture

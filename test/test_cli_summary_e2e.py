@@ -18,7 +18,6 @@ These tests validate the bug fixes shipped in v1.6.2:
 
 from __future__ import annotations
 
-import importlib
 import json
 import sys
 from pathlib import Path
@@ -31,9 +30,7 @@ sys.path.insert(0, str(PACKAGE_ROOT))
 
 import e2e_utils
 
-# Reload to pick up any monkeypatches from conftest
 from any2summary import cli
-cli = importlib.reload(cli)
 
 REAL_YOUTUBE_URL = "https://www.youtube.com/watch?v=9jgcT0Fqt7U"
 

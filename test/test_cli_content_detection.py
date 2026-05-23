@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -13,15 +12,7 @@ import pytest
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE_ROOT))
 
-# Import first, then reload to ensure fresh module state
-import any2summary.cli as cli_module
-
-sys.modules.pop("any2summary", None)
-sys.modules.pop("any2summary.cli", None)
-
 from any2summary import cli
-
-cli = importlib.reload(cli)
 
 
 class MockResponse:
